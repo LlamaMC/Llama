@@ -24,7 +24,8 @@ public class Llama implements ILlama {
 
     @Override
     public void shutdown() {
-        console.stop();
+        console.exit();
+        ((Thread) console).interrupt();
         runtime.shutdown();
     }
 
