@@ -3,6 +3,7 @@ package com.llamamc.llamaapi.player;
 import com.llamamc.llamaapi.block.IBlock;
 import com.llamamc.llamaapi.component.Component;
 import com.llamamc.llamaapi.entity.IEntity;
+import com.llamamc.llamaapi.entity.IHumanEntity;
 import com.llamamc.llamaapi.potion.IPotionEffect;
 import com.llamamc.llamaapi.world.ILocation;
 import com.llamamc.llamaapi.world.IWorld;
@@ -11,7 +12,7 @@ import java.net.InetSocketAddress;
 import java.util.Collection;
 import java.util.UUID;
 
-public interface IPlayer {
+public interface IPlayer extends IHumanEntity {
     UUID uniqueId();
     String name();
     String clientBrand();
