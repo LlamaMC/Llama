@@ -4,5 +4,5 @@ public interface IEventBus {
     void register(Object listener);
     void unregister(Object listener);
 
-    void post(Object event);
+    void post(IEvent event);
 }
