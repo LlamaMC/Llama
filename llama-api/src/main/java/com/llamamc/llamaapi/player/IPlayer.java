@@ -13,14 +13,15 @@ public interface IPlayer extends IHumanEntity {
 
     LlamaFuture<PlayerSnapshot> snapshot();
 
-    LlamaFuture<Boolean> kick(Component component);
-    LlamaFuture<Boolean> ban(Component component);
-    LlamaFuture<Boolean> sudo(String command);
     LlamaFuture<Boolean> hasPermission(String permission);
-    LlamaFuture<Void> sendActionBar(Component component);
-    LlamaFuture<Void> sendMessage(Component component);
-    LlamaFuture<Void> sendBossBar(IBossBar bossBar);
-    LlamaFuture<Void> gameMode(GameMode gameMode);
-    LlamaFuture<Void> skin(ISkin skin);
+
+    void kick(Component component);
+    void ban(Component component);
+    void sudo(String command);
+    void sendActionBar(Component component);
+    void sendMessage(Component component);
+    void sendBossBar(IBossBar bossBar);
+    void gameMode(GameMode gameMode);
+    void skin(ISkin skin);
 
 }

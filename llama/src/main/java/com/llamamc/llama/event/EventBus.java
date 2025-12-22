@@ -1,5 +1,6 @@
 package com.llamamc.llama.event;
 
+import com.llamamc.llamaapi.event.IEvent;
 import com.llamamc.llamaapi.event.IEventBus;
 
 public class EventBus implements IEventBus {
@@ -15,7 +16,7 @@ public class EventBus implements IEventBus {
     }
 
     @Override
-    public void post(Object event) {
+    public void post(IEvent event) {
 
     }
 }

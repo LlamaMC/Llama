@@ -6,6 +6,7 @@ import com.llamamc.llamaapi.ILlama;
 import com.llamamc.llamaapi.ILlamaRuntime;
 import com.llamamc.llamaapi.console.IConsole;
 import com.llamamc.llamaapi.event.IEventBus;
+import com.llamamc.llamaapi.network.INetworkServer;
 
 public class Llama implements ILlama {
     private final ILlamaRuntime runtime;
@@ -18,6 +19,11 @@ public class Llama implements ILlama {
         console = new Console();
         console.start();
         eventBus = new EventBus();
+    }
+
+    @Override
+    public INetworkServer server() {
+        return null;
     }
 
     @Override
