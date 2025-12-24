@@ -2,7 +2,7 @@ package com.llamamc.llamaapi.network;
 
 import com.llamamc.llamaapi.concurrent.LlamaFuture;
 
-@FunctionalInterface
+//@FunctionalInterface
 public interface InboundInterceptor {
-    LlamaFuture<InboundDecision> intercept(NetworkConnection connection, PacketView packet);
+    //LlamaFuture<InboundDecision> intercept(NetworkConnection connection, PacketView packet);
 }

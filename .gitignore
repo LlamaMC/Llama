@@ -34,3 +34,10 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+### Config files ###
+*.properties
+*.toml
+*.yaml
+*.yml
+*.json

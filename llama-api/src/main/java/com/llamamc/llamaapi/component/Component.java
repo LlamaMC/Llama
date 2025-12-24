@@ -24,6 +24,6 @@ public final class Component {
     }
 
     public static Component append(Component component) {
-
+        return component; // TODO: APPEND
     }
 }

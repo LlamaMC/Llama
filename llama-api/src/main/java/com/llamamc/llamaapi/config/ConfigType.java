@@ -1,8 +1,18 @@
 package com.llamamc.llamaapi.config;
 
 public enum ConfigType {
-    JSON,
-    YAML,
-    TOML,
-    PROPERTIES
+    JSON(".json"),
+    YAML(".yml"),
+    TOML(".toml"),
+    PROPERTIES(".properties");
+
+    private final String extension;
+
+    ConfigType(String extension) {
+        this.extension = extension;
+    }
+
+    public String getExtension() {
+        return extension;
+    }
 }

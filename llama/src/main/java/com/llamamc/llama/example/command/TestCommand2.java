@@ -6,6 +6,8 @@ import com.llamamc.llamaapi.command.Command;
 import com.llamamc.llamaapi.command.ICommandContext;
 import com.llamamc.llamaapi.player.IPlayer;
 
+import java.util.List;
+
 public class TestCommand2 {
 
     @Command(name = "test")
