@@ -17,6 +17,8 @@ public class LlamaConfig {
     private int maxPlayers;
     @Key("online-mode")
     private boolean onlineMode;
+    @Key("minecraft-version")
+    private String minecraftVersion;
 
     public String getHost() {
         return host;
@@ -56,5 +58,13 @@ public class LlamaConfig {
 
     public void setOnlineMode(boolean onlineMode) {
         this.onlineMode = onlineMode;
+    }
+
+    public String getMinecraftVersion() {
+        return minecraftVersion;
+    }
+
+    public void setMinecraftVersion(String minecraftVersion) {
+        this.minecraftVersion = minecraftVersion;
     }
 }

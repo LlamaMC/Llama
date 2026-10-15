@@ -1,18 +1,15 @@
 package com.llamamc.llamaapi.network;
 
-import com.llamamc.llamaapi.concurrent.LlamaFuture;
-
 import java.net.InetSocketAddress;
-import java.util.Collection;
 
 public interface INetworkServer {
 
-    INetworkListener listener(String id);
+    void start(InetSocketAddress address);
 
-    Collection<INetworkListener> listeners();
+    void close();
 
-    LlamaFuture<Void> bind(InetSocketAddress address);
+    boolean isRunning();
 
-    LlamaFuture<Void> shutdown();
+    InetSocketAddress address();
 
 }

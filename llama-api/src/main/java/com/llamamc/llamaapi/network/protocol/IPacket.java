@@ -1,8 +1,6 @@
 package com.llamamc.llamaapi.network.protocol;
 
-public interface IPacket<L> {
-    PacketType type();
-    void handle(L listener);
+public interface IPacket {
 
     default boolean terminal() {
         return false;

@@ -6,6 +6,7 @@ public interface IItem {
 
     Component name();
     Component[] lore();
-    Material material();
+    IItemType type();
+    int amount();
 
 }
