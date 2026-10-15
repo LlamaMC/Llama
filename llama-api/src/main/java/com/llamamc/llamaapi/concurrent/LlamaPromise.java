@@ -1,10 +1,10 @@
 package com.llamamc.llamaapi.concurrent;
 
-import java.util.Objects;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
@@ -30,61 +30,67 @@ public final class LlamaPromise<T> {
 
     private static final class DefaultLlamaFuture<T> implements LlamaFuture<T> {
 
-        private final AtomicBoolean done = new AtomicBoolean(false);
-        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        // Value, error and cancel flag are one object, so a reader never sees a partly written result.
+        private final AtomicReference<Outcome<T>> outcome = new AtomicReference<>();
         private final CountDownLatch latch = new CountDownLatch(1);
-        private final CopyOnWriteArrayList<BiConsumer<? super T, ? super Throwable>> listeners = new CopyOnWriteArrayList<>();
-
-        private volatile T value;
-        private volatile Throwable error;
+        private final ConcurrentLinkedQueue<BiConsumer<? super T, ? super Throwable>> listeners = new ConcurrentLinkedQueue<>();
 
         boolean complete(T value) {
-            if (!done.compareAndSet(false, true)) return false;
-            this.value = value;
-            latch.countDown();
-            notifyListeners();
-            return true;
+            return settle(new Outcome<>(value, null, false));
         }
 
         boolean fail(Throwable error) {
-            Objects.requireNonNull(error, "error");
-            if (!done.compareAndSet(false, true)) return false;
-            this.error = error;
-            latch.countDown();
-            notifyListeners();
-            return true;
+            if (error == null) {
+                throw new NullPointerException("error");
+            }
+            return settle(new Outcome<>(null, error, false));
         }
 
         boolean cancel() {
-            if (!done.compareAndSet(false, true)) return false;
-            cancelled.set(true);
+            return settle(new Outcome<>(null, null, true));
+        }
+
+        // The CAS picks the single winner. The outcome is visible before the latch and listeners are released.
+        private boolean settle(Outcome<T> result) {
+            if (!outcome.compareAndSet(null, result)) {
+                return false;
+            }
             latch.countDown();
-            notifyListeners();
+            drain();
             return true;
         }
 
-        private void notifyListeners() {
-            for (var l : listeners) {
-                try {
-                    l.accept(value, errorOrCancel());
-                } catch (Throwable ignored) {}
+        // Each listener is removed before it runs, so a listener runs once even when two threads drain together.
+        private void drain() {
+            var settled = outcome.get();
+            if (settled == null) {
+                return;
             }
-            listeners.clear();
+            var listener = listeners.poll();
+            while (listener != null) {
+                notifyListener(listener, settled);
+                listener = listeners.poll();
+            }
         }
 
-        private Throwable errorOrCancel() {
-            if (cancelled.get()) return new LlamaCancelledException();
-            return error;
+        // A throwing listener must not stop the listeners behind it, so its exception goes to the thread's handler.
+        private void notifyListener(BiConsumer<? super T, ? super Throwable> listener, Outcome<T> settled) {
+            try {
+                listener.accept(settled.value(), settled.failure());
+            } catch (Throwable t) {
+                Thread.currentThread().getUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), t);
+            }
         }
 
         @Override
         public boolean isDone() {
-            return done.get();
+            return outcome.get() != null;
         }
 
         @Override
         public boolean isCancelled() {
-            return cancelled.get();
+            var settled = outcome.get();
+            return settled != null && settled.cancelled();
         }
 
         @Override
@@ -100,21 +106,28 @@ public final class LlamaPromise<T> {
         @Override
         public T await() throws InterruptedException {
             latch.await();
-            if (cancelled.get()) throw new LlamaCancelledException();
-            if (error != null) throw new LlamaAsyncException("Future failed", error);
-            return value;
+            return resultOf(outcome.get());
+        }
+
+        private T resultOf(Outcome<T> settled) {
+            if (settled.cancelled()) {
+                throw new LlamaCancelledException();
+            }
+            if (settled.error() != null) {
+                throw new LlamaAsyncException("Future failed", settled.error());
+            }
+            return settled.value();
         }
 
         @Override
         public LlamaFuture<T> whenComplete(BiConsumer<? super T, ? super Throwable> action) {
-            Objects.requireNonNull(action, "action");
-            if (isDone()) {
-                action.accept(value, errorOrCancel());
-                return this;
+            if (action == null) {
+                throw new NullPointerException("action");
             }
             listeners.add(action);
+            // If the future is still pending, the completing thread drains this listener.
             if (isDone()) {
-                notifyListeners();
+                drain();
             }
             return this;
         }
@@ -126,11 +139,15 @@ public final class LlamaPromise<T> {
 
         @Override
         public <U> LlamaFuture<U> thenApplyAsync(Executor executor, Function<? super T, ? extends U> fn) {
-            Objects.requireNonNull(executor, "executor");
-            Objects.requireNonNull(fn, "fn");
+            if (executor == null) {
+                throw new NullPointerException("executor");
+            }
+            if (fn == null) {
+                throw new NullPointerException("fn");
+            }
             var next = new LlamaPromise<U>();
 
-            whenComplete((v, err) -> executor.execute(() -> {
+            whenComplete((v, err) -> dispatch(executor, next, () -> {
                 if (err != null) {
                     next.fail(err);
                     return;
@@ -152,11 +169,15 @@ public final class LlamaPromise<T> {
 
         @Override
         public <U> LlamaFuture<U> thenComposeAsync(Executor executor, Function<? super T, ? extends LlamaFuture<U>> fn) {
-            Objects.requireNonNull(executor, "executor");
-            Objects.requireNonNull(fn, "fn");
+            if (executor == null) {
+                throw new NullPointerException("executor");
+            }
+            if (fn == null) {
+                throw new NullPointerException("fn");
+            }
             var next = new LlamaPromise<U>();
 
-            whenComplete((v, err) -> executor.execute(() -> {
+            whenComplete((v, err) -> dispatch(executor, next, () -> {
                 if (err != null) {
                     next.fail(err);
                     return;
@@ -164,8 +185,11 @@ public final class LlamaPromise<T> {
                 try {
                     var inner = fn.apply(v);
                     inner.whenComplete((iv, ierr) -> {
-                        if (ierr != null) next.fail(ierr);
-                        else next.complete(iv);
+                        if (ierr != null) {
+                            next.fail(ierr);
+                            return;
+                        }
+                        next.complete(iv);
                     });
                 } catch (Throwable t) {
                     next.fail(t);
@@ -175,9 +199,20 @@ public final class LlamaPromise<T> {
             return next.future();
         }
 
+        // A rejected task never runs, so the derived future must fail here or nothing would complete it.
+        private static void dispatch(Executor executor, LlamaPromise<?> next, Runnable task) {
+            try {
+                executor.execute(task);
+            } catch (RejectedExecutionException e) {
+                next.fail(e);
+            }
+        }
+
         @Override
         public LlamaFuture<T> exceptionally(Function<? super Throwable, ? extends T> fn) {
-            Objects.requireNonNull(fn, "fn");
+            if (fn == null) {
+                throw new NullPointerException("fn");
+            }
             var next = new LlamaPromise<T>();
 
             whenComplete((v, err) -> {
@@ -193,6 +228,16 @@ public final class LlamaPromise<T> {
             });
 
             return next.future();
+        }
+
+        private record Outcome<T>(T value, Throwable error, boolean cancelled) {
+
+            Throwable failure() {
+                if (cancelled) {
+                    return new LlamaCancelledException();
+                }
+                return error;
+            }
         }
     }
 
