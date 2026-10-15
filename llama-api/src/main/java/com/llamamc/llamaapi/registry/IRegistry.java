@@ -9,7 +9,7 @@ public interface IRegistry<T extends IRegistryEntry> {
     Collection<T> values();
 
     default Optional<T> find(String key) {
-        return find(NamespacedKey.parse(key));
+        return NamespacedKey.tryParse(key).flatMap(this::find);
     }
 
     default T require(String key) {
