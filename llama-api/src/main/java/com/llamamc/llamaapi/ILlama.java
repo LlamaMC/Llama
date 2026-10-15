@@ -8,7 +8,7 @@ import com.llamamc.llamaapi.registry.IRegistries;
 public interface ILlama {
 
     INetworkServer server();
-    IEventBus eventBus();
+    IEventBus events();
     IWorldManager worlds();
     IRegistries registries();
     void shutdown();

@@ -1,6 +1,6 @@
 package com.llamamc.llamaapi.event.impl.player;
 
 import com.llamamc.llamaapi.event.IEvent;
+import com.llamamc.llamaapi.player.IPlayer;
 
-public class PlayerJoinEvent implements IEvent {
-}
+public record PlayerJoinEvent(IPlayer player) implements IEvent {}

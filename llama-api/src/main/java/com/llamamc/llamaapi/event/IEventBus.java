@@ -1,8 +1,14 @@
 package com.llamamc.llamaapi.event;
 
-public interface IEventBus {
-    void register(Object listener);
-    void unregister(Object listener);
+import java.util.function.Consumer;
 
+public interface IEventBus {
+
+    <E extends IEvent> IRegistration on(Class<E> type, Consumer<? super E> handler);
+
+    <E extends IEvent> IRegistration on(Class<E> type, EventPriority priority, Consumer<? super E> handler);
+
+    // Handlers run inline on the calling thread, so a slow handler delays the poster.
     void post(IEvent event);
+
 }

@@ -298,7 +298,7 @@ public class Llama implements ILlama {
     }
 
     @Override
-    public IEventBus eventBus() {
+    public IEventBus events() {
         return eventBus;
     }
 

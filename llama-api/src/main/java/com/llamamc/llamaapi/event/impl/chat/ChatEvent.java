@@ -4,29 +4,19 @@ import com.llamamc.llamaapi.component.Component;
 import com.llamamc.llamaapi.event.ICancelableEvent;
 import com.llamamc.llamaapi.player.IPlayer;
 
-public class ChatEvent implements ICancelableEvent {
+public final class ChatEvent implements ICancelableEvent {
     private final IPlayer player;
     private Component message;
     private boolean canceled;
 
-    public ChatEvent(IPlayer player) {
+    public ChatEvent(IPlayer player, Component message) {
+        if (player == null) {
+            throw new IllegalArgumentException("Chat player must not be null");
+        }
+        if (message == null) {
+            throw new IllegalArgumentException("Chat message must not be null");
+        }
         this.player = player;
-    }
-
-    public void format(Component component) {
-
-    }
-
-    public void render(RenderCallback callback) {
-
-    }
-
-    @FunctionalInterface
-    public interface RenderCallback {
-        Component render(IPlayer player, Component message);
-    }
-
-    public void message(Component message) {
         this.message = message;
     }
 
@@ -36,6 +26,13 @@ public class ChatEvent implements ICancelableEvent {
 
     public Component message() {
         return message;
+    }
+
+    public void setMessage(Component message) {
+        if (message == null) {
+            throw new IllegalArgumentException("Chat message must not be null");
+        }
+        this.message = message;
     }
 
     @Override
