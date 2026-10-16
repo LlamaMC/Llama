@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Predicate;
 
 /**
  * Interactive server console. Reads commands on its own daemon thread and prints all output, including
@@ -37,6 +38,7 @@ public final class Console implements IConsole, AutoCloseable {
     private PrintStream originalOut;
     private PrintStream originalErr;
     private volatile boolean closed;
+    private volatile Predicate<String> fallback;
 
     /**
      * @param interruptAction runs when the user presses Ctrl+C in the console
@@ -48,6 +50,14 @@ public final class Console implements IConsole, AutoCloseable {
 
     public void register(ConsoleCommand command) {
         commands.put(command.name(), command);
+    }
+
+    /**
+     * Receives the full line of input that matches no console command. Returns true when it handled the line, which
+     * suppresses the "Unknown command" message. Null removes the fallback.
+     */
+    public void setFallback(Predicate<String> fallback) {
+        this.fallback = fallback;
     }
 
     @Override
@@ -104,7 +114,7 @@ public final class Console implements IConsole, AutoCloseable {
     public void handleCommand(String cmd, String[] parts) {
         ConsoleCommand command = commands.get(cmd.toLowerCase());
         if (command == null) {
-            LOGGER.info("Unknown command '{}'. Type 'help' for a list of commands.", cmd);
+            handleUnknown(cmd, parts);
             return;
         }
         try {
@@ -112,6 +122,23 @@ public final class Console implements IConsole, AutoCloseable {
         } catch (Throwable t) {
             LOGGER.error("Console command '{}' failed", cmd, t);
         }
+    }
+
+    private void handleUnknown(String cmd, String[] parts) {
+        Predicate<String> handler = fallback;
+        if (handler != null && handler.test(toLine(cmd, parts))) {
+            return;
+        }
+        LOGGER.info("Unknown command '{}'. Type 'help' for a list of commands.", cmd);
+    }
+
+    // parts[0] is the command name, so the arguments start at index 1; the fallback needs the whole line back.
+    private static String toLine(String cmd, String[] parts) {
+        var line = new StringBuilder(cmd);
+        for (var index = 1; index < parts.length; index++) {
+            line.append(' ').append(parts[index]);
+        }
+        return line.toString();
     }
 
     private void printHelp() {

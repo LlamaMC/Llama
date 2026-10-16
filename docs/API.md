@@ -265,11 +265,44 @@ ConfigFactory.save(config);
 - `save` writes every public zero-argument `get` method that has a field of the same name. `is` getters are ignored, so a boolean field needs a `get` method too.
 - A failure in `load` or `save` throws a `RuntimeException`.
 
+### Commands
+
+A command is a class that implements `ICommand` and carries a `@Command` annotation with a `name` and, optionally, `aliases`. Register an instance with `llama.commands().register(command)`. If any of its labels is already taken, `register` throws `IllegalStateException` and registers nothing. `unregister(command)` removes all of its labels. The registration line assumes an `ILlama llama` in scope, as the earlier samples do.
+
+```java
+import com.llamamc.llamaapi.command.Command;
+import com.llamamc.llamaapi.command.ICommand;
+import com.llamamc.llamaapi.command.ICommandContext;
+import com.llamamc.llamaapi.component.Component;
+
+@Command(name = "greet", aliases = {"hi"})
+public final class GreetCommand implements ICommand {
+
+    @Override
+    public void execute(ICommandContext context) {
+        if (context.arguments().isEmpty()) {
+            context.reply(Component.of("Usage: greet <name>"));
+            return;
+        }
+        context.reply(Component.of("Hello " + String.join(", ", context.arguments())));
+    }
+}
+
+llama.commands().register(new GreetCommand());
+```
+
+- **Matching.** The first word of a line selects the command, and matching ignores case. An alias selects the same command as the name. `dispatch(line)` returns false when no label matches.
+- **Context.** `label()` returns the first word of the line in lower case, which is the name or alias that matched. `arguments()` returns the remaining words as an unmodifiable list. The registry splits the line on whitespace and passes the rest as plain strings. Argument parsing beyond that is not provided.
+- **Replies.** `reply(Component)` currently writes to the server log only, at INFO level.
+- **Failures.** If a command throws a `RuntimeException`, the registry logs it and replies with `Command failed: ` followed by the message.
+- **Threads.** Commands run on the thread that calls `dispatch`. For console input that is the console thread, not the tick thread, so work that changes server state must go through the scheduler, for example `runOnTick`.
+- **Console.** The console passes each line that matches none of its own commands to the registry. Its own commands run first, so a console command such as `stop` takes precedence over a registry command with the same label.
+- **Permissions.** The `permission` value on `@Command` is not enforced yet.
+
 ## 9. Not yet implemented
 
 - **Player registry and `IPlayer` implementation.** `IPlayer` has no implementing class, and `ILlama` has no player accessor.
 - **Posting player and chat events.** `PlayerJoinEvent`, `PlayerLeaveEvent`, `PlayerConfigureEvent` and `ChatEvent` are defined, but nothing in the runtime posts them, so their handlers never run.
-- **Command dispatcher.** `ICommand`, `ICommandContext` and `Argument` exist, and the example package implements them. Nothing registers or runs commands, and `ILlama` has no command accessor.
 - **Plugin loader and dependency injection.** `IPlugin`, `IPluginContext` and `@Inject` exist. Nothing loads a plugin, and nothing injects a field outside the example package.
 - **Network interceptors and listeners.** `InterceptorRegistry`, `InboundInterceptor` and `INetworkListener` exist in `llama-api`. The runtime does not use them, and `INetworkServer` does not expose them.
 - **World writes.** `IWorld` and `IChunk` have no `setBlock` or other write method.

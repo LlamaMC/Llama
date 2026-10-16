@@ -87,6 +87,7 @@ public class Llama implements ILlama {
         server.start(new InetSocketAddress(llamaConfig.getHost(), llamaConfig.getPort()));
         watchdog = new Watchdog(tickLoop, gcPauseTracker::totalPauseNanos, WatchdogSettings.defaults(), reason -> restart(reason, null));
         console = new Console(() -> requestShutdown(ExitCode.STOP, "Ctrl+C in console", null, false));
+        console.setFallback(commands::dispatch);
         registerConsoleCommands();
 
         tickLoop.start();
