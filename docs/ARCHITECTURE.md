@@ -156,7 +156,8 @@ Decision: no blocking future waits on the tick thread or on worker threads.
 
 - World generation is an asynchronous dependency pipeline. Workers return results as `CompletionStage`s. Dependencies
   use `thenCompose` and `thenCombine`, and results are applied on the tick thread through the scheduler.
-- Every asynchronous step names its executor. Nothing runs on the common pool by accident.
+- Every asynchronous step names its executor. Nothing runs on the common pool by accident. The only `Runnable::run`
+  stages are in `LlamaPromise.thenApply` and `thenCompose`, and each carries a comment saying why.
 - Llama's own blocking chunk methods (`chunkNow`) throw on the tick thread and on world worker threads. This is in
   place today.
 - `join()` on an arbitrary Java future cannot be intercepted, so it is covered by static rules (see the Pureline
