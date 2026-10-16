@@ -18,6 +18,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -38,7 +39,7 @@ class LlamaWorldTest {
         };
 
         try (var world = world(generator); var callers = Executors.newVirtualThreadPerTaskExecutor()) {
-            var tasks = java.util.stream.IntStream.range(0, 32)
+            var tasks = IntStream.range(0, 32)
                     .mapToObj(ignored -> callers.submit(() -> world.chunkNow(4, -3)))
                     .toList();
             for (var task : tasks) {

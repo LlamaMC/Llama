@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -249,7 +250,7 @@ class Minecraft26_3ChunkProtocolTest {
     }
 
     private static Object decode(com.llamamc.llamaapi.network.protocol.PacketRegistry registry, int packetId,
-                                 java.util.function.Consumer<io.netty.buffer.ByteBuf> payload) {
+                                 Consumer<ByteBuf> payload) {
         var input = Unpooled.buffer();
         try {
             input.writeByte(packetId);
