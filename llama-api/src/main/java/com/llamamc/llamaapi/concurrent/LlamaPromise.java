@@ -118,6 +118,8 @@ public final class LlamaPromise<T> {
             return settled.value();
         }
 
+        // A callback runs on the thread that settles this future, or on the thread that adds it when the future is
+        // already settled or when that thread wins the race with the settling thread.
         @Override
         public LlamaFuture<T> whenComplete(BiConsumer<? super T, ? super Throwable> action) {
             if (action == null) {
@@ -136,9 +138,9 @@ public final class LlamaPromise<T> {
             return this;
         }
 
-        // Inline on purpose: fn runs on the thread that settles this future, or on the calling thread when it is
-        // already settled, as CompletableFuture's non-async stages do. Callers that need another thread use
-        // thenApplyAsync with a named executor.
+        // Inline on purpose: fn runs on the thread that settles this future, or on the thread that adds it when the
+        // future is already settled or when that thread wins the race with the settling thread. Callers that need
+        // another thread use thenApplyAsync with a named executor.
         @Override
         public <U> LlamaFuture<U> thenApply(Function<? super T, ? extends U> fn) {
             return thenApplyAsync(Runnable::run, fn);
@@ -169,8 +171,9 @@ public final class LlamaPromise<T> {
             return next.future();
         }
 
-        // Inline on purpose, like thenApply: fn runs on the thread that settles this future, or on the calling thread
-        // when it is already settled, and only starts the inner future.
+        // Inline on purpose, like thenApply: fn runs on the thread that settles this future, or on the thread that adds
+        // it when the future is already settled or when that thread wins the race with the settling thread. It only
+        // starts the inner future.
         @Override
         public <U> LlamaFuture<U> thenCompose(Function<? super T, ? extends LlamaFuture<U>> fn) {
             return thenComposeAsync(Runnable::run, fn);
