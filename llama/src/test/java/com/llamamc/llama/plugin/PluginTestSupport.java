@@ -1,5 +1,6 @@
 package com.llamamc.llama.plugin;
 
+import com.llamamc.llamaapi.ILlama;
 import com.llamamc.llamaapi.event.IEvent;
 
 import java.util.ArrayList;
@@ -12,6 +13,7 @@ import java.util.List;
 public final class PluginTestSupport {
 
     private static final List<String> EVENTS = new ArrayList<>();
+    private static ILlama llama;
 
     private PluginTestSupport() {
     }
@@ -31,7 +33,16 @@ public final class PluginTestSupport {
         return List.copyOf(EVENTS);
     }
 
+    public static synchronized void receiveLlama(ILlama received) {
+        llama = received;
+    }
+
+    public static synchronized ILlama llama() {
+        return llama;
+    }
+
     public static synchronized void clear() {
         EVENTS.clear();
+        llama = null;
     }
 }

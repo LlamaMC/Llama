@@ -6,11 +6,18 @@ import com.llamamc.llama.event.EventBus;
 import com.llamamc.llama.permission.PermissionService;
 import com.llamamc.llama.tick.TickLoop;
 import com.llamamc.llama.tick.TickScheduler;
+import com.llamamc.llamaapi.ILlama;
 import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.command.ICommandSender;
 import com.llamamc.llamaapi.component.Component;
 import com.llamamc.llamaapi.event.IEventBus;
+import com.llamamc.llamaapi.network.INetworkServer;
+import com.llamamc.llamaapi.permission.IPermissionService;
+import com.llamamc.llamaapi.player.IPlayerRegistry;
 import com.llamamc.llamaapi.plugin.IPlugin;
+import com.llamamc.llamaapi.registry.IRegistries;
+import com.llamamc.llamaapi.scheduler.IScheduler;
+import com.llamamc.llamaapi.world.IWorldManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -35,6 +42,7 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -121,6 +129,25 @@ class PluginLoaderTest {
                         @Override
                         public void disable() {
                             PluginTestSupport.record("disable:consumer");
+                        }
+                    }
+                    """,
+            "LlamaAware", """
+                    package fixture;
+
+                    import com.llamamc.llama.plugin.PluginTestSupport;
+                    import com.llamamc.llamaapi.ILlama;
+                    import com.llamamc.llamaapi.plugin.IPlugin;
+
+                    public final class LlamaAware implements IPlugin {
+                        public LlamaAware(ILlama llama) {
+                            PluginTestSupport.receiveLlama(llama);
+                            PluginTestSupport.record("construct:llama");
+                        }
+
+                        @Override
+                        public void enable() {
+                            PluginTestSupport.record("enable:llama");
                         }
                     }
                     """,
@@ -272,7 +299,7 @@ class PluginLoaderTest {
         var permissions = permissions();
         var events = new EventBus();
         var commands = new CommandRegistry(permissions);
-        var loader = loader(plugins, events, commands, permissions);
+        var loader = loader(plugins, new StubLlama(), events, commands, permissions);
         var sender = new Operator();
 
         loader.loadAll();
@@ -290,16 +317,36 @@ class PluginLoaderTest {
         assertEquals(List.of("ping", "command", "disable:cleanup"), PluginTestSupport.events());
     }
 
-    private PluginLoader loader(Path plugins) {
-        var permissions = permissions();
-        return loader(plugins, new EventBus(), new CommandRegistry(permissions), permissions);
+    @Test
+    void pluginConstructorReceivesTheLlamaGivenToTheLoader() throws Exception {
+        var classes = compileFixtures();
+        var plugins = root.resolve("plugins");
+        writeJar(plugins.resolve("llama-aware.jar"), descriptor("llama-aware", "fixture.LlamaAware"), classes,
+                "fixture.LlamaAware");
+        var llama = new StubLlama();
+        var loader = loader(plugins, llama);
+
+        loader.loadAll();
+
+        assertEquals(PluginState.ENABLED, status(loader, "llama-aware").state());
+        assertSame(llama, PluginTestSupport.llama());
+        assertEquals(List.of("construct:llama", "enable:llama"), PluginTestSupport.events());
     }
 
-    private PluginLoader loader(Path plugins, IEventBus events, ICommandRegistry commands,
+    private PluginLoader loader(Path plugins) {
+        return loader(plugins, new StubLlama());
+    }
+
+    private PluginLoader loader(Path plugins, ILlama llama) {
+        var permissions = permissions();
+        return loader(plugins, llama, new EventBus(), new CommandRegistry(permissions), permissions);
+    }
+
+    private PluginLoader loader(Path plugins, ILlama llama, IEventBus events, ICommandRegistry commands,
                                 PermissionService permissions) {
         var scheduler = new TickScheduler(new TickLoop(() -> 0L, (phase, error) -> {
         }));
-        return new PluginLoader(plugins, PluginLoaderTest.class.getClassLoader(), scheduler, events, commands,
+        return new PluginLoader(plugins, PluginLoaderTest.class.getClassLoader(), llama, scheduler, events, commands,
                 permissions);
     }
 
@@ -324,6 +371,55 @@ class PluginLoaderTest {
 
         @Override
         public void sendMessage(Component message) {
+        }
+    }
+
+    /** Only the identity of the instance matters to the tests, so every call fails. */
+    private static final class StubLlama implements ILlama {
+
+        @Override
+        public INetworkServer server() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public IEventBus events() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public IScheduler scheduler() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public IWorldManager worlds() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public IRegistries registries() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public ICommandRegistry commands() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public IPermissionService permissions() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public IPlayerRegistry players() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void shutdown() {
+            throw new UnsupportedOperationException();
         }
     }
 

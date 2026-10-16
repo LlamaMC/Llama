@@ -112,7 +112,7 @@ public class Llama implements ILlama {
         tickLoop.addPhase("chunks", worldManager::tickChunks);
         server = new MinecraftNetworkServer(new ServerStatus(llamaConfig.getMotd(), llamaConfig.getMaxPlayers()),
                 protocolVersion, worldManager.mainWorld(), registries, playerLifecycle);
-        plugins = new PluginLoader(Path.of("plugins"), Llama.class.getClassLoader(), scheduler, eventBus, commands, permissions);
+        plugins = new PluginLoader(Path.of("plugins"), Llama.class.getClassLoader(), this, scheduler, eventBus, commands, permissions);
         plugins.loadAll();
         server.start(new InetSocketAddress(llamaConfig.getHost(), llamaConfig.getPort()));
         watchdog = new Watchdog(tickLoop, gcPauseTracker::totalPauseNanos, WatchdogSettings.defaults(), reason -> restart(reason, null));

@@ -1,5 +1,6 @@
 package com.llamamc.llama.plugin;
 
+import com.llamamc.llamaapi.ILlama;
 import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.permission.IPermissionService;
@@ -37,10 +38,11 @@ public final class PluginLoader {
     private final List<PluginEntry> entries = new ArrayList<>();
     private final List<PluginEntry> enabled = new ArrayList<>();
 
-    public PluginLoader(Path directory, ClassLoader parent, IScheduler scheduler, IEventBus events,
+    public PluginLoader(Path directory, ClassLoader parent, ILlama llama, IScheduler scheduler, IEventBus events,
                         ICommandRegistry commands, IPermissionService permissions) {
         requireArgument(directory, "directory");
         requireArgument(parent, "parent");
+        requireArgument(llama, "llama");
         requireArgument(scheduler, "scheduler");
         requireArgument(events, "events");
         requireArgument(commands, "commands");
@@ -50,6 +52,7 @@ public final class PluginLoader {
         this.events = events;
         this.commands = commands;
         this.injector = new PluginInjector(Map.<Class<?>, Object>of(
+                ILlama.class, llama,
                 IScheduler.class, scheduler,
                 IPermissionService.class, permissions));
     }
