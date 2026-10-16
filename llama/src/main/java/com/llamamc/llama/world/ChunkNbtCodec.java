@@ -109,6 +109,9 @@ final class ChunkNbtCodec {
         throw new IOException("Chunk NBT does not contain a prepared Llama snapshot");
     }
 
+    // The palette is built from the blocks being written, not copied from the snapshot's palette. Entries that no block
+    // uses are dropped and the rest are renumbered, so the data version follows the states that are stored. A chunk
+    // that once held more than 256 states is written with one-byte indexes again after it drops back to 256 or fewer.
     private static EncodedSnapshot encodeSnapshot(IChunk chunk) throws IOException {
         var palette = new ArrayList<BlockState>();
         var paletteIndexes = new HashMap<BlockState, Integer>();

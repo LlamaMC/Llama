@@ -15,9 +15,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -38,6 +42,10 @@ class LlamaWorldTest {
     private static final int BLOCK_Y = 0;
     private static final int BLOCK_Z = 7;
     private static final BlockState STONE = new BlockState("minecraft:stone");
+    private static final int CHUNK_MIN_Y = -64;
+    private static final int CHUNK_HEIGHT = 384;
+    private static final int WIDE_STATE_COUNT = 300;
+    private static final int BYTE_STATE_COUNT = 200;
 
     @TempDir
     Path directory;
@@ -223,6 +231,88 @@ class LlamaWorldTest {
             assertFalse(world.close(Duration.ofSeconds(5)));
             assertTrue(world.entryOf(0, 0).orElseThrow().dirty());
         }
+    }
+
+    @Test
+    @Timeout(20)
+    void savesADemotedPaletteAndReloadsTheSameBlocks() throws Exception {
+        var states = syntheticStates(WIDE_STATE_COUNT);
+        IChunkGenerator generator = (world, position) -> new GeneratedChunk(position, CHUNK_MIN_Y, CHUNK_HEIGHT,
+                states, cyclingIndexes());
+
+        try (var scheduler = new ChunkScheduler("test")) {
+            var world = world(generator, new VicunaChunkStorage(directory), scheduler, () -> true);
+            world.chunk(0, 0).join();
+            // Block index 299 takes state 0. State 299 is still used by other blocks, so all 300 states remain.
+            world.setBlock(11, CHUNK_MIN_Y + 1, 2, states.get(0));
+            assertTrue(world.close(Duration.ofSeconds(5)));
+        }
+        assertEquals(5025, storedDataVersion());
+
+        try (var scheduler = new ChunkScheduler("test")) {
+            var world = world(failingGenerator(), new VicunaChunkStorage(directory), scheduler, () -> true);
+            world.chunk(0, 0).join();
+            for (var blockY = CHUNK_MIN_Y; blockY < CHUNK_MIN_Y + CHUNK_HEIGHT; blockY++) {
+                for (var localZ = 0; localZ < IChunk.WIDTH; localZ++) {
+                    for (var localX = 0; localX < IChunk.WIDTH; localX++) {
+                        var stateIndex = flatIndex(localX, blockY, localZ) % WIDE_STATE_COUNT;
+                        if (stateIndex >= BYTE_STATE_COUNT) {
+                            world.setBlock(localX, blockY, localZ, states.get(stateIndex - BYTE_STATE_COUNT));
+                        }
+                    }
+                }
+            }
+            assertTrue(world.close(Duration.ofSeconds(5)));
+        }
+        assertEquals(5024, storedDataVersion());
+
+        try (var reopened = world(failingGenerator())) {
+            var chunk = reopened.chunkNow(0, 0);
+            for (var blockY = CHUNK_MIN_Y; blockY < CHUNK_MIN_Y + CHUNK_HEIGHT; blockY++) {
+                for (var localZ = 0; localZ < IChunk.WIDTH; localZ++) {
+                    for (var localX = 0; localX < IChunk.WIDTH; localX++) {
+                        var stateIndex = flatIndex(localX, blockY, localZ) % WIDE_STATE_COUNT;
+                        var expected = states.get(stateIndex < BYTE_STATE_COUNT
+                                ? stateIndex : stateIndex - BYTE_STATE_COUNT);
+                        assertEquals(expected, chunk.block(localX, blockY, localZ));
+                    }
+                }
+            }
+        }
+    }
+
+    private static List<BlockState> syntheticStates(int count) {
+        return IntStream.range(0, count)
+                .mapToObj(index -> new BlockState("minecraft:test_block", Map.of("index", Integer.toString(index))))
+                .toList();
+    }
+
+    // Block index i of the generated chunk holds state i modulo the state count.
+    private static short[] cyclingIndexes() {
+        var indexes = new short[IChunk.WIDTH * IChunk.WIDTH * CHUNK_HEIGHT];
+        for (var index = 0; index < indexes.length; index++) {
+            indexes[index] = (short) (index % WIDE_STATE_COUNT);
+        }
+        return indexes;
+    }
+
+    private static int flatIndex(int localX, int blockY, int localZ) {
+        return (blockY - CHUNK_MIN_Y) * IChunk.WIDTH * IChunk.WIDTH + localZ * IChunk.WIDTH + localX;
+    }
+
+    private int storedDataVersion() throws IOException {
+        try (var storage = new VicunaChunkStorage(directory)) {
+            return dataVersion(storage.read(new ChunkPosition(0, 0)).orElseThrow());
+        }
+    }
+
+    private static int dataVersion(ChunkPayload payload) throws IOException {
+        var input = new DataInputStream(new ByteArrayInputStream(payload.nbt()));
+        input.readUnsignedByte();
+        input.readUTF();
+        input.readUnsignedByte();
+        assertEquals("DataVersion", input.readUTF());
+        return input.readInt();
     }
 
     private IChunkGenerator versionedGenerator(int version, AtomicInteger generations) {
