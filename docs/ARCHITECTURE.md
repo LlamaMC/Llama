@@ -142,6 +142,8 @@ Decision: one global deadline of 60 seconds. No pool waits a fixed time on its o
 | 15 to 50 s| Flush and persist chunks, players and world data.                            |
 | 50 to 60 s| Terminate executors, Netty and remaining resources.                          |
 
+Shutdown disconnects players first, then flushes dirty chunks before the storage closes.
+
 - The windows are budgets. A stage that finishes early hands over to the next stage at once.
 - Each stage waits for `min(its budget, time left until the deadline)`, using `System.nanoTime()`.
 - At the deadline the runtime halts with a diagnostic dump. A shutdown counts as clean only when every required write
