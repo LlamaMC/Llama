@@ -40,6 +40,7 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
     private final ExecutorService storageExecutor;
     private final ChunkScheduler ownedScheduler;
     private final BooleanSupplier onTickThread;
+    private volatile boolean closed;
 
     public LlamaWorld(String name, String seed, Path directory, DimensionType dimension, WorldType type,
                       IChunkGenerator generator, IChunkStorage storage) {
@@ -105,6 +106,10 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
 
     @Override
     public LlamaFuture<IChunk> chunk(int chunkX, int chunkZ) {
+        // Checked before the cache, so a chunk loaded before close() also fails afterwards.
+        if (closed) {
+            return failedFuture(new IllegalStateException("World is closed"));
+        }
         var promise = new LlamaPromise<IChunk>();
         loadOrGenerate(new ChunkPosition(chunkX, chunkZ)).whenComplete((chunk, error) -> {
             if (error == null) {
@@ -121,6 +126,10 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
         if (onTickThread.getAsBoolean()) {
             throw new IllegalStateException("chunkNow() would block the tick thread; use chunk() instead");
         }
+        // An immediate throw, because a worker waiting on another queued chunk can starve the pool.
+        if (Thread.currentThread() instanceof WorldWorkerThread) {
+            throw new IllegalStateException("chunkNow() would block a world worker thread; use chunk() instead");
+        }
         try {
             return chunk(chunkX, chunkZ).join();
         } catch (LlamaAsyncException error) {
@@ -133,10 +142,27 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
 
     @Override
     public void close() throws IOException {
+        closed = true;
         if (ownedScheduler != null) {
             ownedScheduler.close();
         }
+        failPendingLoads();
         storage.close();
+    }
+
+    // Loads dropped from the queue during shutdown never run, so their waiters are failed here instead of hanging.
+    private void failPendingLoads() {
+        chunks.forEach((position, pending) -> {
+            if (!pending.isDone()) {
+                failLoad(position, pending, new IllegalStateException("World is closed"));
+            }
+        });
+    }
+
+    private static LlamaFuture<IChunk> failedFuture(Throwable error) {
+        var promise = new LlamaPromise<IChunk>();
+        promise.fail(error);
+        return promise.future();
     }
 
     // Insert before loading: a concurrent caller joins this future instead of starting a second load,

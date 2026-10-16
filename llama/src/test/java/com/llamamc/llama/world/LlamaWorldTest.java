@@ -21,6 +21,7 @@ import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -106,6 +107,28 @@ class LlamaWorldTest {
         var world = world(failingGenerator());
         world.close();
         assertThrows(LlamaAsyncException.class, () -> world.chunk(0, 0).await());
+    }
+
+    @Test
+    @Timeout(10)
+    void closedWorldFailsChunkEvenWhenAlreadyLoaded() throws Exception {
+        var world = world(new FlatChunkGenerator());
+        world.chunkNow(0, 0);
+        world.close();
+        assertThrows(LlamaAsyncException.class, () -> world.chunk(0, 0).join());
+    }
+
+    @Test
+    @Timeout(10)
+    void chunkNowFromAGenerationThreadFails() throws Exception {
+        IChunkGenerator nested = (world, position) -> {
+            world.chunkNow(1, 0);
+            return new FlatChunkGenerator().generate(world, position);
+        };
+        try (var world = world(nested)) {
+            var error = assertThrows(LlamaAsyncException.class, () -> world.chunk(0, 0).join());
+            assertInstanceOf(IllegalStateException.class, error.getCause());
+        }
     }
 
     @Test

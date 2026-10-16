@@ -23,7 +23,8 @@ public interface IWorld {
     LlamaFuture<IChunk> chunk(int chunkX, int chunkZ);
 
     /**
-     * Blocks until the chunk is loaded. Throws IllegalStateException on the tick thread; use {@link #chunk} there.
+     * Blocks until the chunk is loaded. Throws IllegalStateException on the tick thread and on a world worker thread,
+     * for example from inside a generator; use {@link #chunk} there.
      */
     IChunk chunkNow(int chunkX, int chunkZ);
 
