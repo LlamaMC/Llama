@@ -9,18 +9,17 @@ import java.util.UUID;
 public interface IPlayer extends IHumanEntity {
     UUID uniqueId();
     String name();
+
+    /** The {@code minecraft:brand} value the client sent during configuration, or "unknown" when it sent none. */
     String clientBrand();
 
-    LlamaFuture<PlayerSnapshot> snapshot();
+    PlayerSnapshot snapshot();
 
     LlamaFuture<Boolean> hasPermission(String permission);
 
-    void kick(Component component);
-    void ban(Component component);
-    void sendActionBar(Component component);
-    void sendMessage(Component component);
-    void sendBossBar(IBossBar bossBar);
-    void gameMode(GameMode gameMode);
-    void skin(ISkin skin);
+    /** Sends the disconnect with the reason, then closes the connection. */
+    void kick(Component reason);
+
+    void sendMessage(Component message);
 
 }
