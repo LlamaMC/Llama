@@ -105,6 +105,21 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
     }
 
     @Override
+    public boolean unloadChunk(int chunkX, int chunkZ) {
+        // After close() the storage is gone, so an unloaded chunk could never be read back.
+        if (closed) {
+            return false;
+        }
+        var position = new ChunkPosition(chunkX, chunkZ);
+        var future = chunks.get(position);
+        if (future == null || !future.isDone() || future.isCompletedExceptionally()) {
+            return false;
+        }
+        // The two-argument remove leaves the entry alone if another thread unloaded it and a reload replaced it.
+        return chunks.remove(position, future);
+    }
+
+    @Override
     public LlamaFuture<IChunk> chunk(int chunkX, int chunkZ) {
         // Checked before the cache, so a chunk loaded before close() also fails afterwards.
         if (closed) {

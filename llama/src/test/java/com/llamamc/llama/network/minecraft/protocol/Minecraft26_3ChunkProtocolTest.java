@@ -305,6 +305,11 @@ class Minecraft26_3ChunkProtocolTest {
         }
 
         @Override
+        public boolean unloadChunk(int chunkX, int chunkZ) {
+            return false;
+        }
+
+        @Override
         public LlamaFuture<IChunk> chunk(int chunkX, int chunkZ) {
             var promise = new LlamaPromise<IChunk>();
             promise.fail(new UnsupportedOperationException());

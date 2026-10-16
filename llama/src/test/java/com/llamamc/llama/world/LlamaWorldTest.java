@@ -141,6 +141,45 @@ class LlamaWorldTest {
         }
     }
 
+    @Test
+    @Timeout(10)
+    void unloadChunkRemovesALoadedChunkAndAReloadReturnsTheSameBlocks() throws Exception {
+        var generations = new AtomicInteger();
+        IChunkGenerator counting = (world, position) -> {
+            generations.incrementAndGet();
+            return new FlatChunkGenerator().generate(world, position);
+        };
+        try (var world = world(counting)) {
+            var chunk = world.chunkNow(0, 0);
+            var identifier = chunk.block(0, chunk.minY(), 0).identifier();
+
+            assertTrue(world.unloadChunk(0, 0));
+            assertTrue(world.loadedChunk(0, 0).isEmpty());
+
+            var reloaded = world.chunk(0, 0).join();
+            assertEquals(identifier, reloaded.block(0, reloaded.minY(), 0).identifier());
+            // A reload from storage must not generate the chunk again.
+            assertEquals(1, generations.get());
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    void unloadChunkReturnsFalseForAnUnloadedChunk() throws Exception {
+        try (var world = world(new FlatChunkGenerator())) {
+            assertFalse(world.unloadChunk(5, 5));
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    void unloadChunkReturnsFalseOnceTheWorldIsClosed() throws Exception {
+        var world = world(new FlatChunkGenerator());
+        world.chunkNow(0, 0);
+        world.close();
+        assertFalse(world.unloadChunk(0, 0));
+    }
+
     private IChunkGenerator versionedGenerator(int version, AtomicInteger generations) {
         return new IChunkGenerator() {
             @Override

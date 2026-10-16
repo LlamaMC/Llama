@@ -137,6 +137,7 @@ Optional<BlockState> block = world.peekBlock(8, 64, 8);
 - `mainWorld()` is the world named `main` if one is configured, and otherwise the first configured world. `world(name)` returns an `Optional`. `worlds()` returns a copy of the list.
 - **`chunk(x, z)`** returns a future and never blocks. Calls for the same chunk share one load, and a chunk that is already loaded gives back a completed future. The future fails with `IllegalStateException` if the world is closed or if 4096 loads are already pending. A failed load is forgotten, so the next call starts a new one. Once a chunk is loaded, every caller receives the same `IChunk` object.
 - **`loadedChunk(x, z)`** returns the chunk only if it is already loaded. It never blocks and never starts a load. It does not check whether the world is closed, so chunks loaded before `close()` can still be returned.
+- **`unloadChunk(x, z)`** removes a loaded chunk from memory and returns true. The chunk stays in storage, so the next `chunk()` reloads it. It returns false for a chunk that is not loaded or still loading. Callers that already hold the chunk keep a valid object.
 - **`chunkNow(x, z)`** blocks until the chunk is loaded. It throws `IllegalStateException` on the tick thread and on a world worker thread, because a worker waiting on another queued load can starve the pool. Use `chunk()` there instead. A virtual thread, such as one started by `supplyAsync`, may call it.
 - **`peekBlock(x, y, z)`** takes world coordinates. It returns `Optional.empty()` if the chunk is not loaded or if `y` is outside `[minY, minY + height)`. It never starts a load.
 - After `close()`, `chunk()` fails with `IllegalStateException`.
@@ -307,7 +308,7 @@ llama.commands().register(new GreetCommand());
 - **Plugin loader and dependency injection.** `IPlugin`, `IPluginContext` and `@Inject` exist. Nothing loads a plugin, and nothing injects a field outside the example package.
 - **Network interceptors and listeners.** `InterceptorRegistry`, `InboundInterceptor` and `INetworkListener` exist in `llama-api`. The runtime does not use them, and `INetworkServer` does not expose them.
 - **World writes.** `IWorld` and `IChunk` have no `setBlock` or other write method.
-- **Chunk eviction.** Loaded chunks stay in memory. Nothing unloads them.
+- **Automatic chunk eviction.** `unloadChunk` is explicit. Nothing unloads chunks on its own, so memory grows until a plugin unloads them.
 - **Direct palettes.** A section with more block states than the indirect palette allows fails to encode, with the message "direct palettes are not implemented".
 - **Draining queued tasks at scheduler close.** Queued tasks are failed or cancelled when the scheduler closes. They are not run.
 - **Enforcing the join rule.** `LlamaFuture.join()` has no tick-thread check.

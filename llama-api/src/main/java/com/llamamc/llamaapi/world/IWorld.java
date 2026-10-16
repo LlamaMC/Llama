@@ -17,6 +17,13 @@ public interface IWorld {
     Optional<IChunk> loadedChunk(int chunkX, int chunkZ);
 
     /**
+     * Removes a loaded chunk from memory. The chunk stays in storage, so the next chunk() call reloads it. Returns
+     * false if the chunk is not loaded, still loading, or the world is closed. Chunks that callers already hold stay
+     * valid, because chunks are immutable.
+     */
+    boolean unloadChunk(int chunkX, int chunkZ);
+
+    /**
      * Starts the load if it is not already running and returns a future. Never blocks the caller.
      * The future fails if the world is closed or too many loads are pending.
      * Do not call join() or await() on the returned future from a chunk generator or from any world worker thread,
