@@ -136,6 +136,8 @@ public final class LlamaPromise<T> {
             return this;
         }
 
+        // Inline on purpose: fn runs on the settling thread, as CompletableFuture's non-async stages do.
+        // Callers that need another thread use thenApplyAsync with a named executor.
         @Override
         public <U> LlamaFuture<U> thenApply(Function<? super T, ? extends U> fn) {
             return thenApplyAsync(Runnable::run, fn);
@@ -166,6 +168,7 @@ public final class LlamaPromise<T> {
             return next.future();
         }
 
+        // Inline on purpose, like thenApply: fn runs on the settling thread and only starts the inner future.
         @Override
         public <U> LlamaFuture<U> thenCompose(Function<? super T, ? extends LlamaFuture<U>> fn) {
             return thenComposeAsync(Runnable::run, fn);
