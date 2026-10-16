@@ -15,6 +15,7 @@ import com.llamamc.llama.network.minecraft.ServerStatus;
 import com.llamamc.llama.network.minecraft.protocol.MinecraftProtocolVersion;
 import com.llamamc.llama.permission.PermissionService;
 import com.llamamc.llama.plugin.PluginLoader;
+import com.llamamc.llama.player.PlayerLifecycle;
 import com.llamamc.llama.registry.MinecraftRegistries;
 import com.llamamc.llama.shutdown.ShutdownDeadline;
 import com.llamamc.llama.tick.TickLoop;
@@ -30,6 +31,7 @@ import com.llamamc.llamaapi.config.ConfigFactory;
 import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.network.INetworkServer;
 import com.llamamc.llamaapi.permission.IPermissionService;
+import com.llamamc.llamaapi.player.IPlayerRegistry;
 import com.llamamc.llamaapi.registry.IRegistries;
 import com.llamamc.llamaapi.scheduler.IScheduler;
 import com.llamamc.llamaapi.world.DimensionType;
@@ -89,6 +91,7 @@ public class Llama implements ILlama {
     private volatile WorldManager worldManager;
     private volatile MinecraftRegistries registries;
     private volatile PluginLoader plugins;
+    private volatile PlayerLifecycle playerLifecycle;
 
     public void start() {
         var startedAt = System.nanoTime();
@@ -102,11 +105,12 @@ public class Llama implements ILlama {
         gcPauseTracker = GcPauseTracker.install();
         tickLoop = new TickLoop(gcPauseTracker::totalPauseNanos, this::onTickError);
         scheduler = new TickScheduler(tickLoop);
+        playerLifecycle = new PlayerLifecycle(scheduler, eventBus, commands, permissions);
         worldManager = new WorldManager(worldsConfig, Path.of("worlds"), tickLoop::isTickThread, tickLoop::tickCount,
                 tickExecutor(tickLoop));
         tickLoop.addPhase("chunks", worldManager::tickChunks);
         server = new MinecraftNetworkServer(new ServerStatus(llamaConfig.getMotd(), llamaConfig.getMaxPlayers()),
-                protocolVersion, worldManager.mainWorld(), registries);
+                protocolVersion, worldManager.mainWorld(), registries, playerLifecycle);
         plugins = new PluginLoader(Path.of("plugins"), Llama.class.getClassLoader(), scheduler, eventBus, commands, permissions);
         plugins.loadAll();
         server.start(new InetSocketAddress(llamaConfig.getHost(), llamaConfig.getPort()));
@@ -398,6 +402,11 @@ public class Llama implements ILlama {
     @Override
     public IPermissionService permissions() {
         return permissions;
+    }
+
+    @Override
+    public IPlayerRegistry players() {
+        return playerLifecycle.registry();
     }
 
     public LlamaConfig getLlamaConfig() {

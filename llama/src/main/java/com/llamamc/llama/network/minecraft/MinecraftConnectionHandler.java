@@ -3,6 +3,11 @@ package com.llamamc.llama.network.minecraft;
 import com.google.gson.JsonObject;
 import com.llamamc.llama.network.minecraft.protocol.Minecraft26_3Protocol;
 import com.llamamc.llama.network.minecraft.protocol.Minecraft26_3Registries;
+import com.llamamc.llama.player.IPlayerConnection;
+import com.llamamc.llama.player.NetworkPlayer;
+import com.llamamc.llama.player.PlayerLifecycle;
+import com.llamamc.llamaapi.component.Component;
+import com.llamamc.llamaapi.network.minecraft.packet.common.DisconnectPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.common.KeepAlivePacket;
 import com.llamamc.llamaapi.network.minecraft.packet.configuration.ClientInformationPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.configuration.ConfigurationAcknowledgedPacket;
@@ -14,9 +19,13 @@ import com.llamamc.llamaapi.network.minecraft.packet.configuration.SelectKnownPa
 import com.llamamc.llamaapi.network.minecraft.packet.configuration.UpdateEnabledFeaturesPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.handshake.HandshakePacket;
 import com.llamamc.llamaapi.network.minecraft.packet.login.LoginAcknowledgedPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.login.LoginDisconnectPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.login.LoginFinishedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.login.LoginStartPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.AcceptTeleportationPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.ChatCommandPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.ChatCommandSignedPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.ChatPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchReceivedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchFinishedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchStartPacket;
@@ -45,6 +54,8 @@ import com.llamamc.llamaapi.world.ChunkPosition;
 import com.llamamc.llamaapi.world.IChunk;
 import com.llamamc.llamaapi.world.IWorld;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import org.slf4j.Logger;
@@ -60,6 +71,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -68,6 +80,9 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     private static final Logger LOGGER = LoggerFactory.getLogger(MinecraftConnectionHandler.class);
     private static final AtomicInteger NEXT_PLAYER_ID = new AtomicInteger(1);
     private static final KnownPack CORE_PACK = new KnownPack("minecraft", "core", "26.3");
+    private static final String BRAND_CHANNEL = "minecraft:brand";
+    private static final String UNKNOWN_BRAND = "unknown";
+    private static final Runnable NOTHING = () -> { };
     private static final int VIEW_DISTANCE = 2;
     private static final int TRACKING_RADIUS = VIEW_DISTANCE + 1;
     private static final int INITIAL_CHUNKS_PER_BATCH = 9;
@@ -80,10 +95,16 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     private final ServerStatus status;
     private final PacketRegistry registry;
     private final IWorld world;
+    // Null runs the protocol without players: the join packets are sent at once and nothing is registered.
+    private final PlayerLifecycle lifecycle;
 
     private DefaultProtocolState state = DefaultProtocolState.HANDSHAKE;
     private ConnectionStep step = ConnectionStep.HANDSHAKE;
+    private ChannelHandlerContext context;
+    private String username;
     private UUID profileId;
+    private String clientBrand = UNKNOWN_BRAND;
+    private NetworkPlayer player;
     private ScheduledFuture<?> keepAliveTask;
     private final Set<ChunkPosition> streamedChunks = new HashSet<>();
     private final ArrayDeque<IChunk> readyChunks = new ArrayDeque<>();
@@ -94,10 +115,17 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     private boolean batchInFlight;
     private boolean spawnPositionPending;
 
-    MinecraftConnectionHandler(ServerStatus status, PacketRegistry registry, IWorld world) {
+    MinecraftConnectionHandler(ServerStatus status, PacketRegistry registry, IWorld world,
+                               PlayerLifecycle lifecycle) {
         this.status = status;
         this.registry = registry;
         this.world = world;
+        this.lifecycle = lifecycle;
+    }
+
+    @Override
+    public void handlerAdded(ChannelHandlerContext context) {
+        this.context = context;
     }
 
     @Override
@@ -107,7 +135,12 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
             return;
         }
 
-        var decoded = registry.decode(state, PacketFlow.SERVERBOUND, packet);
+        IPacket decoded;
+        try {
+            decoded = registry.decode(state, PacketFlow.SERVERBOUND, packet);
+        } catch (UnknownPacketException ignored) {
+            return;
+        }
 
         switch (decoded) {
             case HandshakePacket handshake -> handleHandshake(context, handshake);
@@ -116,10 +149,10 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
             case LoginStartPacket login -> handleLoginStart(context, login);
             case LoginAcknowledgedPacket ignored -> beginConfiguration(context);
             case ClientInformationPacket ignored -> ignoreConfigurationMetadata(context);
-            case CustomPayloadPacket ignored -> ignoreConfigurationMetadata(context);
+            case CustomPayloadPacket payload -> receiveCustomPayload(context, payload);
             case KnownPacksSelectedPacket selected -> synchronizeRegistries(context, selected);
             case ConfigurationAcknowledgedPacket ignored -> beginPlay(context);
-            default -> close(context);
+            default -> { }
         }
     }
 
@@ -140,6 +173,9 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
             case MovePlayerRotationPacket ignored -> { }
             case MovePlayerStatusPacket ignored -> { }
             case KeepAlivePacket ignored -> { }
+            case ChatPacket chat -> receiveChat(chat.message());
+            case ChatCommandPacket command -> receiveCommand(command.command());
+            case ChatCommandSignedPacket command -> receiveCommand(command.command());
             default -> { }
         }
     }
@@ -154,6 +190,10 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     public void channelInactive(ChannelHandlerContext context) throws Exception {
         if (keepAliveTask != null) {
             keepAliveTask.cancel(false);
+        }
+        // Both a disconnect and an unexpected socket close end here, so this is the one place that starts the quit.
+        if (player != null) {
+            lifecycle.requestQuit(player);
         }
 
         super.channelInactive(context);
@@ -185,6 +225,7 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
             return;
         }
 
+        username = login.username();
         profileId = offlineProfileId(login.username());
         step = ConnectionStep.LOGIN_ACKNOWLEDGEMENT;
         sendAndFlush(context, DefaultProtocolState.LOGIN,
@@ -210,6 +251,16 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
         }
 
         close(context);
+    }
+
+    private void receiveCustomPayload(ChannelHandlerContext context, CustomPayloadPacket payload) {
+        if (state != DefaultProtocolState.CONFIGURATION) {
+            close(context);
+            return;
+        }
+        if (BRAND_CHANNEL.equals(payload.channel())) {
+            clientBrand = brandOf(payload.data());
+        }
     }
 
     private void synchronizeRegistries(ChannelHandlerContext context, KnownPacksSelectedPacket selected) {
@@ -240,16 +291,44 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
             return;
         }
 
+        // The join packets are prepared here. The player is admitted on the tick thread before they are sent.
+        step = ConnectionStep.JOIN_PENDING;
+        var joinPackets = joinPackets(NEXT_PLAYER_ID.getAndIncrement());
+        if (lifecycle == null) {
+            enterPlay(context, joinPackets, NOTHING);
+            return;
+        }
+        player = lifecycle.createPlayer(profileId, username, clientBrand, new PlayerConnection());
+        lifecycle.requestJoin(player, joinPackets);
+    }
+
+    private List<IPacket> joinPackets(int entityId) {
+        var packets = new ArrayList<IPacket>();
+        packets.add(new PlayLoginPacket(entityId, status.maxPlayers(), VIEW_DISTANCE, VIEW_DISTANCE));
+        if (world == null) {
+            packets.add(new PlayerPositionPacket(0, 0.5, 512.0, 0.5, 0.0F, 0.0F));
+        } else {
+            packets.add(new GameEventPacket(GameEvent.LEVEL_CHUNKS_LOAD_START));
+        }
+        return List.copyOf(packets);
+    }
+
+    // Runs on the network thread. whenSent runs after the last join packet has been flushed.
+    private void enterPlay(ChannelHandlerContext context, List<IPacket> joinPackets, Runnable whenSent) {
         state = DefaultProtocolState.PLAY;
         step = ConnectionStep.PLAY;
-        send(context, state, new PlayLoginPacket(
-                NEXT_PLAYER_ID.getAndIncrement(), status.maxPlayers(), VIEW_DISTANCE, VIEW_DISTANCE));
-        if (world == null) {
-            send(context, state, new PlayerPositionPacket(0, 0.5, 512.0, 0.5, 0.0F, 0.0F));
-        } else {
-            send(context, state, new GameEventPacket(GameEvent.LEVEL_CHUNKS_LOAD_START));
+
+        var flushed = context.newPromise();
+        flushed.addListener((ChannelFutureListener) future -> {
+            if (future.isSuccess()) {
+                whenSent.run();
+            }
+        });
+        for (var packet : joinPackets.subList(0, joinPackets.size() - 1)) {
+            send(context, state, packet);
         }
-        context.flush();
+        context.writeAndFlush(encode(context, state, joinPackets.getLast()), flushed);
+
         if (world != null) {
             spawnPositionPending = true;
             updateChunkStream(context, new ChunkPosition(0, 0));
@@ -487,6 +566,96 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
         context.close();
     }
 
+    // The network side of one player. Each method does its work on the connection's event loop, because the tick
+    // thread calls them.
+    private final class PlayerConnection implements IPlayerConnection {
+        @Override
+        public void send(IPacket packet) {
+            onNetworkThread(() -> {
+                if (state == DefaultProtocolState.PLAY) {
+                    sendAndFlush(context, DefaultProtocolState.PLAY, packet);
+                }
+            });
+        }
+
+        @Override
+        public void disconnect(Component reason) {
+            onNetworkThread(() -> {
+                if (state != DefaultProtocolState.PLAY) {
+                    close(context);
+                    return;
+                }
+                closeWith(DefaultProtocolState.PLAY, new DisconnectPacket(reason));
+            });
+        }
+
+        @Override
+        public void denyJoin(Component reason) {
+            onNetworkThread(() -> denyBeforePlay(reason));
+        }
+
+        @Override
+        public void join(List<IPacket> packets, Runnable whenSent) {
+            onNetworkThread(() -> {
+                if (step != ConnectionStep.JOIN_PENDING || !context.channel().isActive()) {
+                    return;
+                }
+                enterPlay(context, packets, whenSent);
+            });
+        }
+    }
+
+    private void denyBeforePlay(Component reason) {
+        switch (state) {
+            case LOGIN -> closeWith(DefaultProtocolState.LOGIN, new LoginDisconnectPacket(reason));
+            case CONFIGURATION -> closeWith(DefaultProtocolState.CONFIGURATION, new DisconnectPacket(reason));
+            default -> close(context);
+        }
+    }
+
+    // The socket closes after the disconnect is flushed, so the client receives the reason before the close.
+    private void closeWith(DefaultProtocolState protocolState, IPacket packet) {
+        context.writeAndFlush(encode(context, protocolState, packet)).addListener(ChannelFutureListener.CLOSE);
+    }
+
+    // A caller on another thread queues the work on the event loop. A loop that has shut down has no connection left.
+    private void onNetworkThread(Runnable task) {
+        var executor = context.executor();
+        if (executor.inEventLoop()) {
+            task.run();
+            return;
+        }
+        try {
+            executor.execute(task);
+        } catch (RejectedExecutionException ignored) {
+            // The loop has shut down, so the connection is gone and there is nothing left to act on.
+        }
+    }
+
+    private void receiveChat(String message) {
+        if (player == null) {
+            return;
+        }
+        lifecycle.requestChat(player, message);
+    }
+
+    private void receiveCommand(String command) {
+        if (player == null) {
+            return;
+        }
+        lifecycle.requestCommand(player, command);
+    }
+
+    // The brand is a length-prefixed UTF-8 string. A payload without one leaves the brand unknown.
+    private static String brandOf(byte[] data) {
+        var buffer = Unpooled.wrappedBuffer(data);
+        var length = VarInts.read(buffer);
+        if (length == null || length < 0 || length > buffer.readableBytes()) {
+            return UNKNOWN_BRAND;
+        }
+        return buffer.readCharSequence(length, StandardCharsets.UTF_8).toString();
+    }
+
     private enum ConnectionStep {
         HANDSHAKE,
         STATUS,
@@ -494,6 +663,7 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
         LOGIN_ACKNOWLEDGEMENT,
         KNOWN_PACKS,
         CONFIGURATION_ACKNOWLEDGEMENT,
+        JOIN_PENDING,
         PLAY
     }
 }
