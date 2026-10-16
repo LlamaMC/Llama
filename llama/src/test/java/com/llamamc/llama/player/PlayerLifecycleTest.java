@@ -4,6 +4,7 @@ import com.llamamc.llama.command.CommandRegistry;
 import com.llamamc.llama.event.EventBus;
 import com.llamamc.llamaapi.component.Component;
 import com.llamamc.llamaapi.event.impl.chat.ChatEvent;
+import com.llamamc.llamaapi.event.impl.player.PlayerPreJoinEvent;
 import com.llamamc.llamaapi.event.impl.player.PlayerQuitEvent;
 import com.llamamc.llamaapi.network.minecraft.packet.play.SystemChatPacket;
 import com.llamamc.llamaapi.network.protocol.IPacket;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -105,6 +107,23 @@ class PlayerLifecycleTest {
         lifecycle.requestQuit(bob);
         scheduler.runQueued();
         assertEquals(2, quits.size());
+    }
+
+    @Test
+    void aLoginAfterTheShutdownDisconnectsIsRefusedWithoutAPreJoinEventOrARegistration() {
+        var preJoins = new ArrayList<PlayerPreJoinEvent>();
+        events.on(PlayerPreJoinEvent.class, preJoins::add);
+        lifecycle.disconnectAll();
+        scheduler.runQueued();
+
+        var connection = new TestPlayers.Connection();
+        var carol = join("Carol", connection);
+
+        assertEquals(Component.of("Server closed"), connection.denyReason());
+        assertFalse(connection.joined());
+        assertTrue(preJoins.isEmpty());
+        assertTrue(lifecycle.registry().byUuid(carol.uniqueId()).isEmpty());
+        assertTrue(lifecycle.registry().online().isEmpty());
     }
 
     private NetworkPlayer join(String name, TestPlayers.Connection connection) {

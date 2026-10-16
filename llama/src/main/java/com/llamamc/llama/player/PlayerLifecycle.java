@@ -31,6 +31,8 @@ public final class PlayerLifecycle {
     private final ICommandRegistry commands;
     private final IPermissionService permissions;
     private final PlayerRegistry registry = new PlayerRegistry();
+    // Set when the shutdown disconnects begin and never cleared. Every admission after that point is refused.
+    private volatile boolean closing;
 
     public PlayerLifecycle(IScheduler scheduler, IEventBus events, ICommandRegistry commands,
                            IPermissionService permissions) {
@@ -81,9 +83,11 @@ public final class PlayerLifecycle {
     /**
      * Disconnects every registered player with the server-closed reason and fires one quit event for each. The work runs
      * on the tick thread, so the tick loop and the scheduler must still be running. The future completes once the work
-     * has run, and fails at once when the loop is stopped.
+     * has run, and fails at once when the loop is stopped. The call also closes admission, so a login admitted after it
+     * starts is refused.
      */
     public LlamaFuture<Void> disconnectAll() {
+        closing = true;
         return scheduler.runOnTick(() -> disconnectRegistered(Component.of(SERVER_CLOSED)));
     }
 
@@ -108,6 +112,12 @@ public final class PlayerLifecycle {
     }
 
     private void admit(NetworkPlayer player, List<IPacket> joinPackets) {
+        // The server is closing. The login is refused before the pre-join event and is never registered.
+        if (closing) {
+            player.connection().denyJoin(Component.of(SERVER_CLOSED));
+            return;
+        }
+
         var preJoin = new PlayerPreJoinEvent(player.uniqueId(), player.name());
         events.post(preJoin);
         if (preJoin.canceled()) {
