@@ -4,7 +4,9 @@ import com.llamamc.llamaapi.world.BlockState;
 import com.llamamc.llamaapi.world.ChunkPosition;
 import com.llamamc.llamaapi.world.IChunk;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 
@@ -13,16 +15,18 @@ import java.util.List;
 final class ChunkBlocks {
     // Both the snapshot and the codec index palette entries with 16 bits, so a chunk cannot hold more states in use.
     private static final int MAX_PALETTE = 65_536;
-    // The first rebuild runs at this palette size. Later ones wait until the palette has doubled, see rebuildPalette.
-    private static final int REBUILD_THRESHOLD = 1024;
+    private static final int INITIAL_SLOTS = 16;
 
     private final ChunkPosition position;
     private final int minY;
     private final int height;
+    // A slot is a palette entry. slotUses counts the blocks that hold it. A slot that no block holds joins
+    // freeSlots and keeps its old state until it is reused, so the palette grows only when every entry is in use.
     private final List<BlockState> palette = new ArrayList<>();
     private final HashMap<BlockState, Integer> paletteIndexes = new HashMap<>();
+    private final ArrayDeque<Integer> freeSlots = new ArrayDeque<>();
+    private int[] slotUses = new int[INITIAL_SLOTS];
     private final short[] indexes;
-    private int nextRebuildSize = REBUILD_THRESHOLD;
     private long revision;
     private boolean dirty;
     private IChunk snapshot;
@@ -42,7 +46,7 @@ final class ChunkBlocks {
             for (var localZ = 0; localZ < IChunk.WIDTH; localZ++) {
                 for (var localX = 0; localX < IChunk.WIDTH; localX++) {
                     var index = blocks.index(localX, blockY, localZ);
-                    blocks.indexes[index] = (short) blocks.paletteIndex(source.block(localX, blockY, localZ));
+                    blocks.indexes[index] = (short) blocks.claimSlot(source.block(localX, blockY, localZ));
                 }
             }
         }
@@ -52,7 +56,17 @@ final class ChunkBlocks {
     void set(int localX, int blockY, int localZ, BlockState state) {
         checkHorizontal(localX, localZ);
         checkVertical(blockY);
-        indexes[index(localX, blockY, localZ)] = (short) paletteIndex(state);
+        var index = index(localX, blockY, localZ);
+        var replaced = Short.toUnsignedInt(indexes[index]);
+        // The store releases the replaced block's slot before the cap is checked. A write that replaces the only block
+        // of a state therefore finds that slot free, so it is never refused.
+        releaseSlot(replaced);
+        if (!hasRoomFor(state)) {
+            // A free slot would have made room, so the release freed nothing. Putting its use back undoes the release.
+            slotUses[replaced]++;
+            throw tooManyStates();
+        }
+        indexes[index] = (short) takeSlot(state);
         revision++;
         dirty = true;
     }
@@ -80,49 +94,57 @@ final class ChunkBlocks {
         return snapshot;
     }
 
-    private int paletteIndex(BlockState state) {
+    private int claimSlot(BlockState state) {
+        if (!hasRoomFor(state)) {
+            throw tooManyStates();
+        }
+        return takeSlot(state);
+    }
+
+    // The cap counts the slots in use. Free slots are reused first, so with none free every palette entry is in use.
+    private boolean hasRoomFor(BlockState state) {
+        return paletteIndexes.containsKey(state) || !freeSlots.isEmpty() || palette.size() < MAX_PALETTE;
+    }
+
+    // Counts one more block in the slot that holds state, giving state a slot first if it has none. Callers check
+    // hasRoomFor before they take a slot.
+    private int takeSlot(BlockState state) {
         var existing = paletteIndexes.get(state);
         if (existing != null) {
+            slotUses[existing]++;
             return existing;
         }
-        if (palette.size() >= nextRebuildSize) {
-            rebuildPalette();
-        }
-        if (palette.size() >= MAX_PALETTE) {
-            throw new IllegalStateException("A chunk holds at most " + MAX_PALETTE + " block states in use");
-        }
+        var slot = freeSlots.isEmpty() ? appendSlot(state) : reuseSlot(state);
+        paletteIndexes.put(state, slot);
+        slotUses[slot] = 1;
+        return slot;
+    }
+
+    private int appendSlot(BlockState state) {
         palette.add(state);
-        paletteIndexes.put(state, palette.size() - 1);
+        if (palette.size() > slotUses.length) {
+            slotUses = Arrays.copyOf(slotUses, 2 * slotUses.length);
+        }
         return palette.size() - 1;
     }
 
-    // Replaced states stay in the palette until a rebuild, so the palette can outgrow the states in use. The rebuild
-    // keeps only the states that blocks use and renumbers the indexes in place, which changes no block and so leaves
-    // the revision alone. The next rebuild waits until the palette has doubled, so a chunk whose states all stay in use
-    // does not scan its blocks for every new state.
-    private void rebuildPalette() {
-        var used = new boolean[palette.size()];
-        for (var index : indexes) {
-            used[Short.toUnsignedInt(index)] = true;
+    private int reuseSlot(BlockState state) {
+        int slot = freeSlots.pop();
+        palette.set(slot, state);
+        return slot;
+    }
+
+    // Removes one block from its slot. A slot that no block holds is no longer a state in use, so it becomes free.
+    private void releaseSlot(int slot) {
+        slotUses[slot]--;
+        if (slotUses[slot] == 0) {
+            paletteIndexes.remove(palette.get(slot));
+            freeSlots.push(slot);
         }
-        var renumbered = new int[palette.size()];
-        var kept = new ArrayList<BlockState>();
-        for (var oldIndex = 0; oldIndex < palette.size(); oldIndex++) {
-            if (used[oldIndex]) {
-                renumbered[oldIndex] = kept.size();
-                kept.add(palette.get(oldIndex));
-            }
-        }
-        for (var block = 0; block < indexes.length; block++) {
-            indexes[block] = (short) renumbered[Short.toUnsignedInt(indexes[block])];
-        }
-        palette.clear();
-        palette.addAll(kept);
-        paletteIndexes.clear();
-        for (var newIndex = 0; newIndex < palette.size(); newIndex++) {
-            paletteIndexes.put(palette.get(newIndex), newIndex);
-        }
-        nextRebuildSize = Math.min(MAX_PALETTE, Math.max(REBUILD_THRESHOLD, 2 * palette.size()));
+    }
+
+    private static IllegalStateException tooManyStates() {
+        return new IllegalStateException("A chunk holds at most " + MAX_PALETTE + " block states in use");
     }
 
     private int index(int localX, int blockY, int localZ) {
