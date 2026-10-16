@@ -120,7 +120,7 @@ After shutdown, Llama stops the tick loop first and then closes the scheduler. F
 - `runOnTick` and `callOnTick` return a future that has already failed with `IllegalStateException` ("Tick loop is not running").
 - `runLaterTicks` returns a handle that is already cancelled.
 - Futures still waiting for a tick fail with the same exception. Queued tasks are not run.
-- `supplyAsync` still runs its supplier. It does not check whether the scheduler is closed.
+- `supplyAsync` fails at once with `IllegalStateException` ("Tick loop is not running"), and its supplier does not run.
 
 ## 6. Worlds and chunks
 
