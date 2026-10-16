@@ -1,5 +1,6 @@
 package com.llamamc.llama.concurrent;
 
+import com.llamamc.llamaapi.concurrent.LlamaFuture;
 import com.llamamc.llamaapi.concurrent.LlamaPromise;
 import com.llamamc.llamaapi.concurrent.LlamaPromise.LlamaAsyncException;
 import com.llamamc.llamaapi.concurrent.LlamaPromise.LlamaCancelledException;
@@ -18,6 +19,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -154,6 +156,38 @@ class LlamaPromiseTest {
         var composedFailure = assertThrows(LlamaAsyncException.class, composed::join);
         assertInstanceOf(IllegalStateException.class, appliedFailure.getCause());
         assertInstanceOf(IllegalStateException.class, composedFailure.getCause());
+    }
+
+    @Test
+    @Timeout(10)
+    void stageFailingWithCancelledExceptionFailsItsDependent() {
+        var source = new LlamaPromise<String>();
+        LlamaFuture<String> failing = source.future().thenApply(v -> {
+            throw new LlamaCancelledException();
+        });
+        var dependent = failing.thenApply(String::length);
+
+        source.complete("abc");
+
+        assertFalse(dependent.isCancelled());
+        var failure = assertThrows(LlamaAsyncException.class, dependent::join);
+        assertInstanceOf(LlamaCancelledException.class, failure.getCause());
+    }
+
+    @Test
+    @Timeout(10)
+    void executorErrorFailsDerivedFutureInsteadOfHanging() {
+        var source = new LlamaPromise<String>();
+        Executor broken = task -> {
+            throw new AssertionError("executor broke");
+        };
+        var derived = source.future().thenApplyAsync(broken, String::length);
+
+        source.complete("abc");
+
+        assertTrue(derived.isDone());
+        var failure = assertThrows(LlamaAsyncException.class, derived::join);
+        assertInstanceOf(AssertionError.class, failure.getCause());
     }
 
     @Test

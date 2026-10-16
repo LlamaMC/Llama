@@ -28,7 +28,7 @@ public final class TickScheduler implements IScheduler {
     private final TickLoop loop;
     private final AtomicLong nextSequence = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final Set<LlamaPromise<?>> pending = ConcurrentHashMap.newKeySet();
+    private final Set<PendingCall<?>> pending = ConcurrentHashMap.newKeySet();
     // An abandoned tick thread may still poll this queue while the fresh thread runs, so it must be thread-safe.
     private final PriorityBlockingQueue<DelayedTask> delayed =
             new PriorityBlockingQueue<>(INITIAL_DELAYED_CAPACITY, DUE_ORDER);
@@ -73,7 +73,7 @@ public final class TickScheduler implements IScheduler {
             throw new NullPointerException("task");
         }
         long dueTick = loop.tickCount() + Math.max(0, ticks);
-        var entry = new DelayedTask(dueTick, nextSequence.getAndIncrement(), task, new AtomicBoolean());
+        var entry = new DelayedTask(dueTick, nextSequence.getAndIncrement(), task);
         if (closed.get()) {
             entry.cancel();
             return entry;
@@ -108,7 +108,7 @@ public final class TickScheduler implements IScheduler {
      */
     public void close() {
         closed.set(true);
-        pending.forEach(TickScheduler::failNotRunning);
+        pending.forEach(TickScheduler::failIfClaimed);
         pending.clear();
         scheduled.forEach(DelayedTask::cancel);
         scheduled.clear();
@@ -119,22 +119,28 @@ public final class TickScheduler implements IScheduler {
             failNotRunning(promise);
             return;
         }
-        // Registered before queueing: either close() sees this promise, or the check after queueing sees closed.
-        pending.add(promise);
-        if (!loop.execute(() -> runPending(promise, task))) {
-            pending.remove(promise);
-            failNotRunning(promise);
+        var call = new PendingCall<>(promise);
+        // Registered before queueing: either close() sees this call, or the check after queueing sees closed.
+        pending.add(call);
+        if (!loop.execute(() -> runPending(call, task))) {
+            pending.remove(call);
+            failIfClaimed(call);
             return;
         }
         if (closed.get()) {
-            pending.remove(promise);
-            failNotRunning(promise);
+            pending.remove(call);
+            failIfClaimed(call);
         }
     }
 
-    private <T> void runPending(LlamaPromise<T> promise, Callable<T> task) {
-        pending.remove(promise);
-        settle(promise, task);
+    // The claim picks one winner: the loop runs the task, or close() or a rejection fails it, never both.
+    private <T> void runPending(PendingCall<T> call, Callable<T> task) {
+        var claimed = call.claim();
+        pending.remove(call);
+        if (!claimed) {
+            return;
+        }
+        settle(call.promise(), task);
     }
 
     private void enqueueDelayed(DelayedTask entry) {
@@ -179,6 +185,13 @@ public final class TickScheduler implements IScheduler {
         promise.fail(new IllegalStateException(NOT_RUNNING));
     }
 
+    private static void failIfClaimed(PendingCall<?> call) {
+        if (!call.claim()) {
+            return;
+        }
+        failNotRunning(call.promise());
+    }
+
     // A throwing task still settles its future, so no caller waits forever on it.
     private static <T> void settle(LlamaPromise<T> promise, Callable<T> task) {
         try {
@@ -191,7 +204,48 @@ public final class TickScheduler implements IScheduler {
         }
     }
 
-    private record DelayedTask(long dueTick, long sequence, Runnable task, AtomicBoolean cancelled) implements ITaskHandle {
+    // A promise waiting in the task queue. Only the first party to claim it may settle it.
+    private static final class PendingCall<T> {
+        private final LlamaPromise<T> promise;
+        private final AtomicBoolean claimed = new AtomicBoolean();
+
+        PendingCall(LlamaPromise<T> promise) {
+            this.promise = promise;
+        }
+
+        LlamaPromise<T> promise() {
+            return promise;
+        }
+
+        boolean claim() {
+            return claimed.compareAndSet(false, true);
+        }
+    }
+
+    // Identity equality on purpose: a user Runnable with a changing hashCode must not lose its entry from the sets.
+    private static final class DelayedTask implements ITaskHandle {
+        private final long dueTick;
+        private final long sequence;
+        private final Runnable task;
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+
+        DelayedTask(long dueTick, long sequence, Runnable task) {
+            this.dueTick = dueTick;
+            this.sequence = sequence;
+            this.task = task;
+        }
+
+        long dueTick() {
+            return dueTick;
+        }
+
+        long sequence() {
+            return sequence;
+        }
+
+        Runnable task() {
+            return task;
+        }
 
         @Override
         public void cancel() {

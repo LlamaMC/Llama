@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -105,6 +106,26 @@ class TickSchedulerTest {
         assertTrue(queued.isDone());
         var error = assertThrows(LlamaAsyncException.class, queued::join);
         assertInstanceOf(IllegalStateException.class, error.getCause());
+    }
+
+    @Test
+    @Timeout(10)
+    void queuedCallOnTickNeverRunsWhenTheSchedulerClosesBeforeStart() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean();
+        CountDownLatch markerRan = new CountDownLatch(1);
+        LlamaFuture<String> queued = scheduler.callOnTick(() -> {
+            invoked.set(true);
+            return "value";
+        });
+        scheduler.close();
+        loop.start();
+        assertTrue(loop.execute(markerRan::countDown));
+        assertTrue(markerRan.await(5, TimeUnit.SECONDS));
+
+        assertTrue(queued.isDone());
+        var error = assertThrows(LlamaAsyncException.class, queued::join);
+        assertInstanceOf(IllegalStateException.class, error.getCause());
+        assertFalse(invoked.get());
     }
 
     @Test

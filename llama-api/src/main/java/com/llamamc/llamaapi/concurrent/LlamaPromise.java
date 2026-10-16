@@ -153,7 +153,7 @@ public final class LlamaPromise<T> {
 
             whenComplete((v, err) -> dispatch(executor, next, () -> {
                 if (err != null) {
-                    propagateFailure(next, err);
+                    propagateFailure(next, err, isCancelled());
                     return;
                 }
                 try {
@@ -183,14 +183,14 @@ public final class LlamaPromise<T> {
 
             whenComplete((v, err) -> dispatch(executor, next, () -> {
                 if (err != null) {
-                    propagateFailure(next, err);
+                    propagateFailure(next, err, isCancelled());
                     return;
                 }
                 try {
                     var inner = fn.apply(v);
                     inner.whenComplete((iv, ierr) -> {
                         if (ierr != null) {
-                            propagateFailure(next, ierr);
+                            propagateFailure(next, ierr, inner.isCancelled());
                             return;
                         }
                         next.complete(iv);
@@ -203,18 +203,19 @@ public final class LlamaPromise<T> {
             return next.future();
         }
 
-        // Any exception from execute means the task never runs, so the derived future must fail here.
+        // A failing execute is treated as a task that will not run, so the derived future fails here.
         private static void dispatch(Executor executor, LlamaPromise<?> next, Runnable task) {
             try {
                 executor.execute(task);
-            } catch (RuntimeException e) {
-                next.fail(e);
+            } catch (Throwable t) {
+                next.fail(t);
             }
         }
 
-        // Cancellation is not a failure, so a dependent of a cancelled future must not report it as one.
-        private static void propagateFailure(LlamaPromise<?> next, Throwable err) {
-            if (err instanceof LlamaCancelledException) {
+        // The source's state decides, not the exception type: a stage that joins a cancelled future also throws
+        // LlamaCancelledException, and that stage has failed rather than been cancelled.
+        private static void propagateFailure(LlamaPromise<?> next, Throwable err, boolean sourceCancelled) {
+            if (sourceCancelled) {
                 next.cancel();
                 return;
             }
