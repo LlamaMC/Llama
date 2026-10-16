@@ -55,8 +55,9 @@ Decision: single writer, asynchronous persistence, and crash-consistent region s
   A commit writes the new index into the older slot. A reader takes the valid slot with the higher generation. A crash
   during a commit leaves the previous slot intact, so the region stays readable.
 - Persistent identity of a block state is its string form (`namespace:key[properties]`), not its runtime registry ID.
-- Status: section 10. The current storage is the Vicuna format. Its palette stores only the key, so properties are
-  lost today. That is a known defect to fix with the new format.
+- Status: section 10. The current storage is the Vicuna format. Its chunk payload stores each palette entry as the
+  state string, so properties are kept. Data version 5024 uses one-byte indexes for up to 256 states, and 5025 uses
+  two-byte indexes above that. Data version 5023, which stored the key and the properties separately, is still read.
 
 ## 3. Command senders and permissions
 
@@ -121,8 +122,8 @@ Decision: three palette modes with automatic promotion.
 | Indirect | 2 to 256    | Local palette, bit-packed indexes, 4 to 8 bits     |
 | Direct   | 257 and up  | Global state IDs, bit-packed to the registry width |
 
-- The direct width is the bit width needed for the global block-state registry (for example 15 bits for about 30,000
-  states), not a fixed 16 bits.
+- The direct width is the bit width needed for the global block-state registry (for example 16 bits for the 35,723
+  states of the official 26.3 registry), not a fixed width.
 - Promotion happens when a section passes 256 distinct states. Demotion does not happen on each update. It happens
   during compaction on save, to avoid switching modes repeatedly.
 - The in-memory representation is separate from the protocol encoder. The protocol encoder picks the mode for the

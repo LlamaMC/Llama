@@ -142,6 +142,8 @@ Optional<BlockState> block = world.peekBlock(8, 64, 8);
 - **Automatic eviction.** A loaded chunk with no tickets is evicted after 1800 ticks (90 seconds) without access, or after 600 ticks (30 seconds) when used heap is above 85 percent of the maximum. Each world examines at most 64 chunks per tick. A chunk's save must succeed before it leaves memory. If the save fails, the chunk stays loaded and a warning is logged.
 - **`chunkNow(x, z)`** blocks until the chunk is loaded. It throws `IllegalStateException` on the tick thread and on a world worker thread, because a worker waiting on another queued load can starve the pool. Use `chunk()` there instead. A virtual thread, such as one started by `supplyAsync`, may call it.
 - **`peekBlock(x, y, z)`** takes world coordinates. It returns `Optional.empty()` if the chunk is not loaded or if `y` is outside `[minY, minY + height)`. It never starts a load.
+- **`setBlock(x, y, z, state)`** writes one block at world coordinates. It runs on the tick thread only, and from any other thread it throws `IllegalStateException` with a message that names `setBlockAsync`. The chunk must already be loaded, so hold a ticket or wait for `chunk()` first; the call never loads a chunk and throws `IllegalStateException` otherwise.
+- **`setBlockAsync(x, y, z, state)`** queues the same write on the tick thread and returns a future. It is callable from any thread. The future fails with the same exceptions as `setBlock`, and it fails if the tick loop rejects the task.
 - After `close()`, `chunk()` fails with `IllegalStateException`.
 - **`IChunk`** has `WIDTH = 16`. `position()` returns a `ChunkPosition`, and `minY()` and `height()` give the vertical range. `block(localX, blockY, localZ)` takes chunk-local X and Z and an absolute Y in `[minY, minY + height)`. `highestBlockY(localX, localZ)` takes chunk-local X and Z. Out-of-range arguments throw `IndexOutOfBoundsException`. Chunk reads are safe from any thread and do not change the chunk.
 - **`BlockState`** is a record of a `NamespacedKey` and a map of properties, copied on construction. `new BlockState("minecraft:stone")` and `BlockState.AIR` are the usual starting points. `property(name)` returns `null` for a missing property. `with(name, value)` returns a new state.
@@ -362,7 +364,6 @@ A plugin is a jar in the `plugins/` directory, which is created when missing. It
 - **Player registry and `IPlayer` implementation.** `IPlayer` has no implementing class, and `ILlama` has no player accessor.
 - **Posting player and chat events.** `PlayerJoinEvent`, `PlayerLeaveEvent`, `PlayerConfigureEvent` and `ChatEvent` are defined, but nothing in the runtime posts them, so their handlers never run.
 - **Network interceptors and listeners.** `InterceptorRegistry`, `InboundInterceptor` and `INetworkListener` exist in `llama-api`. The runtime does not use them, and `INetworkServer` does not expose them.
-- **World writes.** `IWorld` and `IChunk` have no `setBlock` or other write method.
 - **Direct palettes.** A section with more block states than the indirect palette allows fails to encode, with the message "direct palettes are not implemented".
 - **Draining queued tasks at scheduler close.** Queued tasks are failed or cancelled when the scheduler closes. They are not run.
 - **Enforcing the join rule.** `LlamaFuture.join()` has no tick-thread check.
