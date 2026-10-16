@@ -22,6 +22,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -288,6 +289,32 @@ class RegionCompactionTest {
     }
 
     @Test
+    void moveIOExceptionWithAnUncheckedFailedReopenMarksTheRegionFailed() throws Exception {
+        var path = regionPath();
+        var expected = new byte[4][];
+        var failNextOpen = new AtomicBoolean(false);
+        try (var region = new VicunaRegionFile(path, 0, 0, (source, target) -> {
+            throw new IOException("Simulated rename failure");
+        }, runtimeFailingOpenOnce(path, failNextOpen))) {
+            writeRounds(region, expected);
+            failNextOpen.set(true);
+
+            var failure = assertThrows(IOException.class, region::compact);
+            assertEquals("Simulated rename failure", failure.getMessage());
+            assertEquals(1, failure.getSuppressed().length);
+            assertEquals("Simulated opener failure", failure.getSuppressed()[0].getMessage());
+
+            assertTrue(region.failed());
+            assertFalse(Files.exists(temporaryPath()));
+            var read = assertThrows(IOException.class, () -> region.read(0));
+            assertTrue(read.getMessage().contains("0,0"));
+            assertSame(failure, read.getCause());
+            assertThrows(IOException.class, () -> region.write(0, new ChunkPayload(payload(SECTOR, 9))));
+            assertThrows(IOException.class, region::compact);
+        }
+    }
+
+    @Test
     void regionWithoutAValidCommitClosesEveryFailedChannel() throws Exception {
         var path = regionPath();
         try (var region = new VicunaRegionFile(path, 0, 0)) {
@@ -332,6 +359,25 @@ class RegionCompactionTest {
 
         // Without compaction, forty payloads of 64 KiB would fill more than two mebibytes.
         assertTrue(Files.size(storedRegion()) < ONE_MIB);
+    }
+
+    @Test
+    void writeStaysCommittedWhenCompactionThrowsAfterIt() throws Exception {
+        var position = new ChunkPosition(0, 0);
+        var moves = new AtomicInteger();
+        try (var storage = new VicunaChunkStorage(directory, (source, target) -> {
+            moves.incrementAndGet();
+            throw new IllegalStateException("Simulated mover failure");
+        }, FileChannel::open)) {
+            for (var round = 0; round < LARGE_ROUNDS; round++) {
+                storage.write(position, new ChunkPayload(payload(LARGE_PAYLOAD, round)));
+                assertArrayEquals(payload(LARGE_PAYLOAD, round), storage.read(position).orElseThrow().nbt());
+            }
+        }
+
+        // The mover ran at least once, so compaction was attempted after committed writes and every write still returned normally.
+        assertTrue(moves.get() > 0);
+        assertFalse(Files.exists(storedRegion().resolveSibling("r.0.0.vca.tmp")));
     }
 
     private Path regionPath() {
@@ -394,6 +440,17 @@ class RegionCompactionTest {
         return (opened, options) -> {
             if (opened.equals(target) && failNext.getAndSet(false)) {
                 throw new IOException("Simulated reopen failure");
+            }
+
+            return FileChannel.open(opened, options);
+        };
+    }
+
+    // Fails only the first open of the region file itself with an unchecked exception, as a broken opener would.
+    private static VicunaRegionFile.IChannelOpener runtimeFailingOpenOnce(Path target, AtomicBoolean failNext) {
+        return (opened, options) -> {
+            if (opened.equals(target) && failNext.getAndSet(false)) {
+                throw new IllegalStateException("Simulated opener failure");
             }
 
             return FileChannel.open(opened, options);
