@@ -1,5 +1,6 @@
 package com.llamamc.llamaapi;
 
+import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.network.INetworkServer;
 import com.llamamc.llamaapi.scheduler.IScheduler;
@@ -13,6 +14,7 @@ public interface ILlama {
     IScheduler scheduler();
     IWorldManager worlds();
     IRegistries registries();
+    ICommandRegistry commands();
     void shutdown();
 
 }

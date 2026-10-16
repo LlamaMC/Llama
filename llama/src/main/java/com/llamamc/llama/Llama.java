@@ -1,5 +1,6 @@
 package com.llamamc.llama;
 
+import com.llamamc.llama.command.CommandRegistry;
 import com.llamamc.llama.config.LlamaConfig;
 import com.llamamc.llama.config.PermissionsConfig;
 import com.llamamc.llama.config.WorldsConfig;
@@ -20,6 +21,7 @@ import com.llamamc.llama.watchdog.Watchdog;
 import com.llamamc.llama.watchdog.WatchdogSettings;
 import com.llamamc.llama.world.WorldManager;
 import com.llamamc.llamaapi.ILlama;
+import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.config.ConfigFactory;
 import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.network.INetworkServer;
@@ -52,6 +54,7 @@ public class Llama implements ILlama {
 
     private final Path crashReportDirectory = Path.of("crash-reports");
     private final IEventBus eventBus = new EventBus();
+    private final CommandRegistry commands = new CommandRegistry();
     private final CountDownLatch shutdownRequested = new CountDownLatch(1);
     private final CountDownLatch shutdownComplete = new CountDownLatch(1);
     private final AtomicReference<ShutdownRequest> shutdownRequest = new AtomicReference<>();
@@ -319,6 +322,11 @@ public class Llama implements ILlama {
     @Override
     public IRegistries registries() {
         return registries;
+    }
+
+    @Override
+    public ICommandRegistry commands() {
+        return commands;
     }
 
     public LlamaConfig getLlamaConfig() {
