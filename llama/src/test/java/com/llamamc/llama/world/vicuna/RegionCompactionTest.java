@@ -7,20 +7,25 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 @Timeout(60)
 class RegionCompactionTest {
@@ -31,6 +36,8 @@ class RegionCompactionTest {
     private static final int LARGE_PAYLOAD = 64 * 1024;
     private static final int LARGE_ROUNDS = 40;
     private static final long BLOCK_WAIT_NANOS = TimeUnit.SECONDS.toNanos(10);
+    private static final VicunaRegionFile.IFileMover MOVE_ATOMICALLY = (source, target) ->
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 
     @TempDir
     Path directory;
@@ -164,7 +171,7 @@ class RegionCompactionTest {
 
             Thread.ofPlatform().start(compaction);
             try {
-                entered.await();
+                awaitMoveStarted(entered, compaction);
                 awaitBlocked(Thread.ofPlatform().start(write), write);
                 assertFalse(compaction.isDone());
             } finally {
@@ -208,6 +215,50 @@ class RegionCompactionTest {
         try (var region = new VicunaRegionFile(path, 0, 0)) {
             assertArrayEquals(payload(SECTOR, 2), region.read(0).orElseThrow().nbt());
             assertArrayEquals(payload(SECTOR, 4), region.read(2).orElseThrow().nbt());
+        }
+    }
+
+    @Test
+    void failedReopenAfterTheMoveRefusesReadsAndWrites() throws Exception {
+        var path = regionPath();
+        var expected = new byte[4][];
+        var failNextOpen = new AtomicBoolean(false);
+        try (var region = new VicunaRegionFile(path, 0, 0, MOVE_ATOMICALLY, failingOpenOnce(path, failNextOpen))) {
+            writeRounds(region, expected);
+            failNextOpen.set(true);
+
+            var failure = assertThrows(IOException.class, region::compact);
+            assertEquals("Simulated reopen failure", failure.getMessage());
+
+            var read = assertThrows(IOException.class, () -> region.read(0));
+            assertTrue(read.getMessage().contains("0,0"));
+            assertSame(failure, read.getCause());
+            var written = assertThrows(IOException.class,
+                    () -> region.write(0, new ChunkPayload(payload(SECTOR, 9))));
+            assertTrue(written.getMessage().contains("0,0"));
+            assertThrows(IOException.class, region::compact);
+            assertTrue(region.failed());
+        }
+    }
+
+    @Test
+    void reopeningFromDiskAfterTheSeamRecoversReadsEveryChunkCompacted() throws Exception {
+        var path = regionPath();
+        var expected = new byte[4][];
+        var failNextOpen = new AtomicBoolean(false);
+        try (var region = new VicunaRegionFile(path, 0, 0, MOVE_ATOMICALLY, failingOpenOnce(path, failNextOpen))) {
+            writeRounds(region, expected);
+            failNextOpen.set(true);
+            assertThrows(IOException.class, region::compact);
+        }
+
+        // The seam has failed once and no longer does, so a region opened from the replaced file serves the compacted chunks.
+        assertFalse(failNextOpen.get());
+        try (var region = new VicunaRegionFile(path, 0, 0, MOVE_ATOMICALLY, failingOpenOnce(path, failNextOpen))) {
+            assertFalse(region.failed());
+            assertEquals(0L, region.deadBytes());
+            assertFalse(Files.exists(temporaryPath()));
+            assertChunks(region, expected);
         }
     }
 
@@ -273,6 +324,35 @@ class RegionCompactionTest {
             assertTrue(System.nanoTime() < deadline, "The write never reached the region monitor");
             Thread.onSpinWait();
         }
+    }
+
+    // A compaction that fails before the move never counts the latch down, so its exception is surfaced instead of waiting forever.
+    private static void awaitMoveStarted(CountDownLatch entered, Future<?> compaction) throws InterruptedException {
+        if (entered.await(BLOCK_WAIT_NANOS, TimeUnit.NANOSECONDS)) {
+            return;
+        }
+
+        if (!compaction.isDone()) {
+            fail("The move never started");
+        }
+
+        try {
+            compaction.get();
+            fail("Compaction finished without reaching the move");
+        } catch (ExecutionException error) {
+            fail("Compaction failed before the move started: " + error.getCause(), error.getCause());
+        }
+    }
+
+    // Fails only the first open of the region file itself, so the temporary file's open during copying is unaffected.
+    private static VicunaRegionFile.IChannelOpener failingOpenOnce(Path target, AtomicBoolean failNext) {
+        return (opened, options) -> {
+            if (opened.equals(target) && failNext.getAndSet(false)) {
+                throw new IOException("Simulated reopen failure");
+            }
+
+            return FileChannel.open(opened, options);
+        };
     }
 
     private static void awaitLatch(CountDownLatch latch) throws IOException {
