@@ -14,6 +14,7 @@ import com.llamamc.llama.network.minecraft.protocol.MinecraftProtocolVersion;
 import com.llamamc.llama.registry.MinecraftRegistries;
 import com.llamamc.llama.tick.TickLoop;
 import com.llamamc.llama.tick.TickMetrics;
+import com.llamamc.llama.tick.TickScheduler;
 import com.llamamc.llama.watchdog.GcPauseTracker;
 import com.llamamc.llama.watchdog.Watchdog;
 import com.llamamc.llama.watchdog.WatchdogSettings;
@@ -23,6 +24,7 @@ import com.llamamc.llamaapi.config.ConfigFactory;
 import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.network.INetworkServer;
 import com.llamamc.llamaapi.registry.IRegistries;
+import com.llamamc.llamaapi.scheduler.IScheduler;
 import com.llamamc.llamaapi.world.DimensionType;
 import com.llamamc.llamaapi.world.WorldType;
 import com.llamamc.llamaapi.world.IWorldManager;
@@ -59,6 +61,7 @@ public class Llama implements ILlama {
     private WorldsConfig worldsConfig;
     private GcPauseTracker gcPauseTracker;
     private TickLoop tickLoop;
+    private TickScheduler scheduler;
     private Watchdog watchdog;
     private Console console;
     private INetworkServer server;
@@ -78,6 +81,7 @@ public class Llama implements ILlama {
         server.start(new InetSocketAddress(llamaConfig.getHost(), llamaConfig.getPort()));
         gcPauseTracker = GcPauseTracker.install();
         tickLoop = new TickLoop(gcPauseTracker::totalPauseNanos, this::onTickError);
+        scheduler = new TickScheduler(tickLoop);
         watchdog = new Watchdog(tickLoop, gcPauseTracker::totalPauseNanos, WatchdogSettings.defaults(), reason -> restart(reason, null));
         console = new Console(() -> requestShutdown(ExitCode.STOP, "Ctrl+C in console", null, false));
         registerConsoleCommands();
@@ -300,6 +304,11 @@ public class Llama implements ILlama {
     @Override
     public IEventBus events() {
         return eventBus;
+    }
+
+    @Override
+    public IScheduler scheduler() {
+        return scheduler;
     }
 
     @Override

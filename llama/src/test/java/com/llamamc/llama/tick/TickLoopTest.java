@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -129,5 +130,51 @@ class TickLoopTest {
         loop.takeOver();
         assertInstanceOf(AbandonedThreadError.class, fenced.get(2, TimeUnit.SECONDS));
         loop.fence();
+    }
+
+    @Test
+    void executeReturnsFalseAfterStop() {
+        assertTrue(loop.execute(() -> {}), "tasks may be queued before start");
+        loop.start();
+        assertTrue(loop.stop(Duration.ofSeconds(2)));
+        assertFalse(loop.execute(() -> {}));
+    }
+
+    @Test
+    void queuedTaskDoesNotRunOnAbandonedThread() throws Exception {
+        CompletableFuture<Thread> hungThread = new CompletableFuture<>();
+        CompletableFuture<Void> releaseHung = new CompletableFuture<>();
+        CompletableFuture<Void> releaseFresh = new CompletableFuture<>();
+        CompletableFuture<Thread> ranOn = new CompletableFuture<>();
+        AtomicInteger runs = new AtomicInteger();
+        try {
+            loop.execute(() -> {
+                hungThread.complete(Thread.currentThread());
+                releaseHung.join();
+            });
+            // Holds the fresh thread, so the queue is not drained before the abandoned thread wakes up.
+            loop.execute(releaseFresh::join);
+            loop.execute(() -> {
+                runs.incrementAndGet();
+                ranOn.complete(Thread.currentThread());
+            });
+            loop.start();
+
+            Thread hung = hungThread.get(2, TimeUnit.SECONDS);
+            loop.takeOver();
+            releaseHung.complete(null);
+            hung.join(2000);
+            assertFalse(hung.isAlive(), "abandoned thread unwinds without taking queued work");
+
+            releaseFresh.complete(null);
+            Thread runner = ranOn.get(2, TimeUnit.SECONDS);
+            assertNotSame(hung, runner);
+            assertSame(loop.tickThread(), runner);
+            loop.stop(Duration.ofSeconds(2));
+            assertEquals(1, runs.get());
+        } finally {
+            releaseHung.complete(null);
+            releaseFresh.complete(null);
+        }
     }
 }

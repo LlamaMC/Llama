@@ -39,6 +39,7 @@ public final class TickLoop {
     private final Object ownerLock = new Object();
 
     private volatile boolean running;
+    private volatile boolean stopped;
     private volatile Thread tickThread;
     private volatile int abandonedCount;
     private volatile long tickStartNanos;
@@ -66,16 +67,24 @@ public final class TickLoop {
     }
 
     /**
-     * Queues a task to run on the tick thread at the start of the next tick. Safe to call from any thread.
+     * Queues a task to run on the tick thread at the start of the next tick. Safe to call from any thread. Tasks may
+     * be queued before {@link #start()}.
+     *
+     * @return {@code false} if the loop has been stopped, in which case the task is not queued
      */
-    public void execute(Runnable task) {
+    public boolean execute(Runnable task) {
+        if (stopped) {
+            return false;
+        }
         tasks.add(task);
+        return true;
     }
 
     public void start() {
         synchronized (ownerLock) {
             if (running) throw new IllegalStateException("Tick loop is already running");
             running = true;
+            stopped = false;
             Thread thread = newTickThread();
             tickThread = thread;
             thread.start();
@@ -91,6 +100,7 @@ public final class TickLoop {
         Thread thread;
         synchronized (ownerLock) {
             running = false;
+            stopped = true;
             thread = tickThread;
         }
         if (thread == null || thread == Thread.currentThread()) return true;
@@ -252,16 +262,27 @@ public final class TickLoop {
     private void runTasks() {
         int pending = tasks.size();
         for (int i = 0; i < pending; i++) {
-            Runnable task = tasks.poll();
-            if (task == null) return;
-            try {
-                task.run();
-            } catch (AbandonedThreadError e) {
-                throw e;
-            } catch (Throwable t) {
-                fence();
-                errorHandler.onError(TASKS_PHASE, t);
+            // Peek, fence, then remove: a task leaves the queue only after the fence passes, so an abandoned thread
+            // never takes a task that the fresh thread should run.
+            Runnable task = tasks.peek();
+            if (task == null) {
+                return;
             }
+            fence();
+            if (tasks.remove(task)) {
+                runTask(task);
+            }
+        }
+    }
+
+    private void runTask(Runnable task) {
+        try {
+            task.run();
+        } catch (AbandonedThreadError e) {
+            throw e;
+        } catch (Throwable t) {
+            fence();
+            errorHandler.onError(TASKS_PHASE, t);
         }
     }
 
