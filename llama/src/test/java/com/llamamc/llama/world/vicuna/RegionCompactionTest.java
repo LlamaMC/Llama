@@ -7,11 +7,15 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -36,6 +40,9 @@ class RegionCompactionTest {
     private static final int LARGE_PAYLOAD = 64 * 1024;
     private static final int LARGE_ROUNDS = 40;
     private static final long BLOCK_WAIT_NANOS = TimeUnit.SECONDS.toNanos(10);
+    // The two commit slots follow the 32-byte header fields and are 24 bytes each.
+    private static final long FIRST_COMMIT_OFFSET = 32L;
+    private static final int COMMIT_SLOTS_BYTES = 48;
     private static final VicunaRegionFile.IFileMover MOVE_ATOMICALLY = (source, target) ->
             Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 
@@ -128,7 +135,7 @@ class RegionCompactionTest {
         var expected = new byte[4][];
         try (var region = new VicunaRegionFile(path, 0, 0, (source, target) -> {
             Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            // Not an IOException, so compact() does not reopen the old channel; the object is abandoned as after a crash.
+            // Not an IOException, so compact() marks the region failed instead of reopening it; the object is abandoned as after a crash.
             throw new IllegalStateException("Simulated crash after the move");
         })) {
             writeRounds(region, expected);
@@ -263,6 +270,44 @@ class RegionCompactionTest {
     }
 
     @Test
+    void moverRuntimeFailureMarksTheRegionFailed() throws Exception {
+        var path = regionPath();
+        var expected = new byte[4][];
+        try (var region = new VicunaRegionFile(path, 0, 0, (source, target) -> {
+            throw new IllegalStateException("Simulated mover failure");
+        })) {
+            writeRounds(region, expected);
+
+            assertThrows(IllegalStateException.class, region::compact);
+
+            assertTrue(region.failed());
+            assertFalse(Files.exists(temporaryPath()));
+            var read = assertThrows(IOException.class, () -> region.read(0));
+            assertTrue(read.getMessage().contains("0,0"));
+        }
+    }
+
+    @Test
+    void regionWithoutAValidCommitClosesEveryFailedChannel() throws Exception {
+        var path = regionPath();
+        try (var region = new VicunaRegionFile(path, 0, 0)) {
+            region.write(0, new ChunkPayload(payload(SECTOR, 1)));
+        }
+        clearCommitSlots(path);
+
+        var opened = new ArrayList<FileChannel>();
+        var opener = recordingOpener(opened);
+        assertThrows(IOException.class, () -> new VicunaRegionFile(path, 0, 0, MOVE_ATOMICALLY, opener));
+        assertEquals(1, opened.size());
+        assertFalse(opened.get(0).isOpen());
+
+        assertThrows(IOException.class, () -> new VicunaRegionFile(path, 0, 0, MOVE_ATOMICALLY, opener));
+        assertEquals(2, opened.size());
+        assertFalse(opened.get(0).isOpen());
+        assertFalse(opened.get(1).isOpen());
+    }
+
+    @Test
     void storageDoesNotCompactARegionSmallerThanOneMebibyte() throws Exception {
         var position = new ChunkPosition(0, 0);
         try (var storage = new VicunaChunkStorage(directory)) {
@@ -353,6 +398,22 @@ class RegionCompactionTest {
 
             return FileChannel.open(opened, options);
         };
+    }
+
+    // Records every channel the region opens, so a test can check that a failed open closed its channel.
+    private static VicunaRegionFile.IChannelOpener recordingOpener(List<FileChannel> opened) {
+        return (target, options) -> {
+            var channel = FileChannel.open(target, options);
+            opened.add(channel);
+            return channel;
+        };
+    }
+
+    // Zeroes both commit slots, so the file has no committed directory left to open from.
+    private static void clearCommitSlots(Path path) throws IOException {
+        try (var file = FileChannel.open(path, StandardOpenOption.WRITE)) {
+            file.write(ByteBuffer.allocate(COMMIT_SLOTS_BYTES), FIRST_COMMIT_OFFSET);
+        }
     }
 
     private static void awaitLatch(CountDownLatch latch) throws IOException {
