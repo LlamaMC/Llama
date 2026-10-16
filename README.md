@@ -12,8 +12,6 @@ The project has two Maven modules:
 `docs/API.md` describes the API as it stands today. Section 9 lists what is defined but not implemented yet:
 
 - Network interceptors and listeners. The types exist, but the runtime does not use them.
-- Posting `PlayerConfigureEvent`. The type exists, but nothing posts it.
-- Direct palettes. Only the protocol encoder writes them, for sections with more than 256 block states. Chunks in memory have no palette modes.
 - Running queued tasks when the scheduler closes. They are failed or cancelled instead.
 - Enforcing the rule against calling `join()` on the tick thread.
 
@@ -67,7 +65,7 @@ On start, Llama creates any missing configuration file in the working directory,
 
 - `[groups]` maps a group name to a list of permission names. The default is `admin = ["llamamc.command.example"]`.
 - `[users.<uuid>]` lists the `permissions` and `groups` of one user. The default is one user, `00000000-0000-0000-0000-000000000000`, in the `admin` group.
-- The `permission` value on `@Command` is not enforced yet (`docs/API.md` section 8).
+- The node a command checks is `@Command.permission` when it is set, otherwise `llama.command.<name>`. The node defaults to OP (`docs/API.md` section 8).
 
 **`worlds.toml`** defines worlds (`WorldsConfig`). Each `[worlds.<name>]` table has:
 

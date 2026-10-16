@@ -91,8 +91,8 @@ Decision: an own modular loader with explicit constructor injection. No DI frame
 - Dependencies are resolved before anything loads, as a graph with a topological sort. A cycle disables every plugin
   in it. A missing hard dependency disables the plugin that needs it. A missing soft dependency only changes the order.
 - Lifecycle: LOAD (constructor injection) → ENABLE → DISABLE. DISABLE runs in reverse order.
-- Injectable types: `IScheduler`, `IEventBus`, `ICommandRegistry`, `IPermissionService`, `IPluginContext` and
-  `org.slf4j.Logger`. A constructor parameter of any other type fails that plugin with a message naming the type.
+- Injectable types: `IScheduler`, `IEventBus`, `ICommandRegistry`, `IPermissionService`, `ILlama`, `IPluginContext`
+  and `org.slf4j.Logger`. A constructor parameter of any other type fails that plugin with a message naming the type.
 - A plugin can publish a service through `IPluginContext.provide`. A plugin that declares a hard dependency on that
   plugin receives the service through its constructor.
 - A failing plugin is disabled and logged. It does not stop the server start.

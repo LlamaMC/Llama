@@ -8,7 +8,7 @@ Llama is a Minecraft server runtime written in Java 25, built to show how to wri
 
 ## 2. Quick start
 
-The runtime gives the plugin an `ILlama`. This guide does not describe how that happens, because there is no plugin loader yet.
+The runtime gives the plugin an `ILlama`. Plugins receive it through their constructor, as described in the Plugins section.
 
 ```java
 import com.llamamc.llamaapi.ILlama;
@@ -366,14 +366,13 @@ A plugin is a jar in the `plugins/` directory, which is created when missing. It
 - **Order.** Dependencies are resolved before anything loads. A plugin loads after each of its dependencies that is present. A missing or disabled hard dependency disables the plugin that needs it, and so does every plugin that depends on that one. A missing soft dependency only changes the order.
 - **Failures.** A dependency cycle disables every plugin in it, and the log names the cycle. The second of two plugins with the same id is disabled. A missing or invalid descriptor disables the plugin. An exception in the constructor, `load()` or `enable()` disables that plugin and is logged. The server still starts.
 - **Lifecycle.** The constructor runs, then `load()`, then `enable()`. At shutdown `disable()` runs in reverse load order. If `enable()` throws, `disable()` still runs for that plugin.
-- **Injection.** Constructor parameters may have these types: `IScheduler`, `IEventBus`, `ICommandRegistry`, `IPermissionService`, `IPluginContext` and `org.slf4j.Logger`. The logger is named after the plugin id. Any other type must be a service that a hard dependency publishes. Otherwise the plugin is disabled, and the message names the type. With several constructors, the one annotated `@Inject` is used. Without one, the only constructor is used, or the one with the most parameters if that is unique.
+- **Injection.** Constructor parameters may have these types: `IScheduler`, `IEventBus`, `ICommandRegistry`, `IPermissionService`, `ILlama`, `IPluginContext` and `org.slf4j.Logger`. The logger is named after the plugin id. Any other type must be a service that a hard dependency publishes. Otherwise the plugin is disabled, and the message names the type. With several constructors, the one annotated `@Inject` is used. Without one, the only constructor is used, or the one with the most parameters if that is unique.
 - **Services.** `context.provide(Type.class, service)` publishes a service. A plugin with a hard dependency on the publisher receives it through its constructor. Disabling the publisher unpublishes it.
 - **Isolation.** Each plugin has its own class loader, whose parent is the server class loader, so it shares the API classes and cannot replace them. The loader is closed when the plugin is disabled. Disabling a plugin removes the commands and event handlers it registered.
 
 ## 9. Not yet implemented
 
 - **Network interceptors and listeners.** `InterceptorRegistry`, `InboundInterceptor` and `INetworkListener` exist in `llama-api`. The runtime does not use them, and `INetworkServer` does not expose them.
-- **Direct palettes.** A section with more block states than the indirect palette allows fails to encode, with the message "direct palettes are not implemented".
 - **Draining queued tasks at scheduler close.** Queued tasks are failed or cancelled when the scheduler closes. They are not run.
 - **Enforcing the join rule.** `LlamaFuture.join()` has no tick-thread check.
 
