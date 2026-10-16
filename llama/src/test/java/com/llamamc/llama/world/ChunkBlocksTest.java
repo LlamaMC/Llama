@@ -9,11 +9,9 @@ import org.junit.jupiter.api.Timeout;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Timeout(30)
 class ChunkBlocksTest {
@@ -24,8 +22,9 @@ class ChunkBlocksTest {
     private static final int EARLY_WRITES = 1_000;
     private static final int HISTORY_WRITES = 70_000;
     private static final int REFUSALS = 1_000;
-    // Refusals are constant-time checks. A rescan per refusal would take seconds, so this bound is generous.
-    private static final long REFUSAL_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(2);
+    private static final int SPARSE_STATES = 100;
+    // More than half of the SPARSE_STATES + 1 palette entries, so the next store compacts.
+    private static final int FREED_SLOTS = 51;
 
     @Test
     void replacedStatesDoNotCountTowardTheCapAndAnEarlierSnapshotKeepsItsBlocks() {
@@ -52,18 +51,49 @@ class ChunkBlocksTest {
     void aChunkAtTheCapRefusesNewStatesInConstantTime() {
         var blocks = fullChunk();
         var revision = blocks.revision();
-        var started = System.nanoTime();
+        var scans = blocks.paletteScans();
 
         // Each attempt writes a new state over an AIR block. AIR keeps other blocks, so the write needs a new slot.
         for (var refusal = 0; refusal < REFUSALS; refusal++) {
             var index = MAX_STATES - 1 + refusal;
             assertThrows(IllegalStateException.class, () -> setDistinct(blocks, index));
         }
-        var elapsed = System.nanoTime() - started;
 
+        // Only compaction scans the palette, and it never starts with no free slot. So refusals scan nothing.
+        assertEquals(scans, blocks.paletteScans());
         assertEquals(revision, blocks.revision());
         assertEquals(BlockState.AIR, stateAt(blocks.snapshot(), MAX_STATES - 1));
-        assertTrue(elapsed < REFUSAL_BUDGET_NANOS, "Refusals took " + elapsed + " ns");
+    }
+
+    @Test
+    void freedSlotsAreCompactedOnTheNextStoreAndAnEarlierSnapshotKeepsItsBlocks() {
+        var blocks = ChunkBlocks.copyOf(airChunk(MIN_Y, TALL_HEIGHT));
+        for (var index = 0; index < SPARSE_STATES; index++) {
+            setDistinct(blocks, index);
+        }
+        var before = blocks.snapshot();
+        var expected = readAll(before);
+        var scans = blocks.paletteScans();
+
+        // Each write puts AIR over the only block of a state, so it frees a slot and reuses none. The palette is more
+        // than half free after these writes, but nothing has compacted it yet.
+        for (var index = 0; index < FREED_SLOTS; index++) {
+            place(blocks, index, BlockState.AIR);
+        }
+        assertEquals(scans, blocks.paletteScans());
+        assertEquals(SPARSE_STATES + 1, blocks.paletteSize());
+
+        // AIR over AIR frees nothing, but the store still compacts first.
+        place(blocks, SPARSE_STATES, BlockState.AIR);
+
+        assertEquals(scans + 1, blocks.paletteScans());
+        assertEquals(1 + SPARSE_STATES - FREED_SLOTS, blocks.paletteSize());
+        assertEquals(expected, readAll(before));
+        var after = blocks.snapshot();
+        for (var index = 0; index < SPARSE_STATES; index++) {
+            var expectedState = index < FREED_SLOTS ? BlockState.AIR : distinctState(index);
+            assertEquals(expectedState, stateAt(after, index));
+        }
     }
 
     @Test
