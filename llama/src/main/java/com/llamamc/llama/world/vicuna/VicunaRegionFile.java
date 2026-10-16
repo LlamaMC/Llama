@@ -30,9 +30,9 @@ final class VicunaRegionFile implements AutoCloseable {
     private static final int COMMIT_BYTES = 24;
     private static final long MIN_COMPACTION_BYTES = 1024L * 1024L;
     private static final String TEMPORARY_SUFFIX = ".tmp";
-    private static final IFileMover REPLACE_ATOMICALLY = (source, target) ->
+    static final IFileMover REPLACE_ATOMICALLY = (source, target) ->
             Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-    private static final IChannelOpener OPEN_FILE = FileChannel::open;
+    static final IChannelOpener OPEN_FILE = FileChannel::open;
 
     private final Path path;
     private final int regionX;
@@ -294,12 +294,13 @@ final class VicunaRegionFile implements AutoCloseable {
     }
 
     // The move failed, so the file on disk is still the old one; only a reopen that fails leaves the region unusable.
+    // The move failure becomes the region's failure, so reads report it as the cause and the reopen error stays attached to it.
     private void reopenAfterFailedMove(IOException failure) {
         try {
             channel = opener.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
-        } catch (IOException error) {
+        } catch (Exception error) {
             failure.addSuppressed(error);
-            reopenFailure = error;
+            reopenFailure = failure;
         }
     }
 
