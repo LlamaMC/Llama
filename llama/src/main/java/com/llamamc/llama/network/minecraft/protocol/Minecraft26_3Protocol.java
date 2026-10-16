@@ -64,6 +64,8 @@ public final class Minecraft26_3Protocol {
     private static final int MAX_KNOWN_PACKS = 64;
     private static final int MAX_PROFILE_PROPERTIES = 16;
     private static final int MAX_USERNAME_CHARACTERS = 16;
+    private static final int MIN_PALETTE_BITS = 4;
+    private static final int MAX_PALETTE_BITS = 8;
 
     private Minecraft26_3Protocol() {
     }
@@ -713,18 +715,28 @@ public final class Minecraft26_3Protocol {
             output.writeByte(0);
             writeVarInt(output, gameRegistries.blockStateId(palette.keySet().iterator().next()));
         } else {
-            output.writeByte(4);
+            var bits = paletteBits(palette.size());
+            output.writeByte(bits);
             writeVarInt(output, palette.size());
             for (var state : palette.keySet()) {
                 writeVarInt(output, gameRegistries.blockStateId(state));
             }
-            for (var value : pack(values, 4)) {
+            for (var value : pack(values, bits)) {
                 output.writeLong(value);
             }
         }
 
         output.writeByte(0);
         writeVarInt(output, 41);
+    }
+
+    private static int paletteBits(int paletteSize) {
+        var bits = Math.max(MIN_PALETTE_BITS, Integer.SIZE - Integer.numberOfLeadingZeros(paletteSize - 1));
+        if (bits > MAX_PALETTE_BITS) {
+            throw new IllegalStateException("Section has " + paletteSize
+                    + " block states; direct palettes are not implemented");
+        }
+        return bits;
     }
 
     private static long[] pack(int[] values, int bits) {

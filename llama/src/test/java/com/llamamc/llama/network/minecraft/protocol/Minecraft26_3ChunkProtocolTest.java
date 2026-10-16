@@ -15,20 +15,30 @@ import com.llamamc.llamaapi.network.minecraft.packet.play.MovePlayerRotationPack
 import com.llamamc.llamaapi.network.minecraft.packet.play.MovePlayerStatusPacket;
 import com.llamamc.llamaapi.network.protocol.DefaultProtocolState;
 import com.llamamc.llamaapi.network.protocol.PacketFlow;
+import com.llamamc.llamaapi.world.BlockState;
 import com.llamamc.llamaapi.world.ChunkPosition;
 import com.llamamc.llamaapi.world.DimensionType;
 import com.llamamc.llamaapi.world.IChunk;
 import com.llamamc.llamaapi.world.IWorld;
 import com.llamamc.llamaapi.world.WorldType;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class Minecraft26_3ChunkProtocolTest {
+    private static final int FIVE_BIT_PACKED_LONGS = 342;
+    private static final List<String> SIMPLE_STATES = List.of(
+            "minecraft:air", "minecraft:stone", "minecraft:granite", "minecraft:diorite", "minecraft:andesite",
+            "minecraft:bedrock", "minecraft:dirt", "minecraft:cobblestone", "minecraft:gravel", "minecraft:sand",
+            "minecraft:gold_ore", "minecraft:iron_ore", "minecraft:coal_ore", "minecraft:oak_planks",
+            "minecraft:glass", "minecraft:bricks", "minecraft:bookshelf");
+
     @Test
     void decodesThe26_3MovementAndChunkFlowPackets() {
         var registry = Minecraft26_3Protocol.createRegistry();
@@ -112,6 +122,27 @@ class Minecraft26_3ChunkProtocolTest {
     }
 
     @Test
+    void seventeenBlockStatesUseAFiveBitPalette() {
+        var output = encodeSingleSection(17);
+
+        try {
+            var sections = sectionBytes(output);
+            sections.skipBytes(Short.BYTES * 2);
+            assertEquals(5, sections.readUnsignedByte());
+            assertEquals(17, readVarInt(sections));
+            for (var state = 0; state < 17; state++) {
+                readVarInt(sections);
+            }
+            sections.skipBytes(FIVE_BIT_PACKED_LONGS * Long.BYTES);
+            assertEquals(0, sections.readUnsignedByte());
+            assertEquals(41, readVarInt(sections));
+            assertEquals(0, sections.readableBytes());
+        } finally {
+            output.release();
+        }
+    }
+
+    @Test
     void normalChunkKeepsChunkAndLightPayloadsAligned() {
         var chunk = new NormalChunkGenerator(0L).generate(null, new ChunkPosition(0, 0));
         var output = Unpooled.buffer();
@@ -149,6 +180,24 @@ class Minecraft26_3ChunkProtocolTest {
         } finally {
             output.release();
         }
+    }
+
+    private static ByteBuf encodeSingleSection(int distinctStates) {
+        var states = SIMPLE_STATES.stream()
+                .limit(distinctStates)
+                .map(identifier -> new BlockState(identifier))
+                .toList();
+        var output = Unpooled.buffer();
+        Minecraft26_3Protocol.createRegistry().encode(DefaultProtocolState.PLAY, PacketFlow.CLIENTBOUND,
+                output, new LevelChunkWithLightPacket(new SingleSectionChunk(states)));
+        assertEquals(0x2E, readVarInt(output));
+        return output;
+    }
+
+    private static ByteBuf sectionBytes(ByteBuf output) {
+        output.skipBytes(Integer.BYTES * 2);
+        skipHeightmaps(output);
+        return output.readSlice(readVarInt(output));
     }
 
     private static void skipHeightmaps(io.netty.buffer.ByteBuf input) {
@@ -208,6 +257,34 @@ class Minecraft26_3ChunkProtocolTest {
             return registry.decode(DefaultProtocolState.PLAY, PacketFlow.SERVERBOUND, input);
         } finally {
             input.release();
+        }
+    }
+
+    private record SingleSectionChunk(List<BlockState> states) implements IChunk {
+        @Override
+        public ChunkPosition position() {
+            return new ChunkPosition(0, 0);
+        }
+
+        @Override
+        public int minY() {
+            return 0;
+        }
+
+        @Override
+        public int height() {
+            return IChunk.WIDTH;
+        }
+
+        @Override
+        public BlockState block(int localX, int blockY, int localZ) {
+            var index = (blockY * IChunk.WIDTH + localZ) * IChunk.WIDTH + localX;
+            return states.get(index % states.size());
+        }
+
+        @Override
+        public int highestBlockY(int localX, int localZ) {
+            return height() - 1;
         }
     }
 

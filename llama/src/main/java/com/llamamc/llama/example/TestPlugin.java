@@ -1,7 +1,6 @@
 package com.llamamc.llama.example;
 
 import com.llamamc.llamaapi.ILlama;
-import com.llamamc.llamaapi.ILlamaRuntime;
 import com.llamamc.llamaapi.di.annotation.Inject;
 import com.llamamc.llamaapi.plugin.*;
 
@@ -9,7 +8,6 @@ import com.llamamc.llamaapi.plugin.*;
 @Depend(dependType = DependType.SOFT, plugin = {"Essentials", "LuckPerms"})
 @Load(value = LoadPhase.PRE_WORLD)
 public final class TestPlugin implements IPlugin {
-    @Inject private ILlamaRuntime runtime;
     @Inject private IPluginContext context;
     @Inject private ILlama llama;
 
@@ -28,7 +26,6 @@ public final class TestPlugin implements IPlugin {
 
     @Override
     public void disable() {
-        this.runtime = null;
         this.context = null;
     }
 }

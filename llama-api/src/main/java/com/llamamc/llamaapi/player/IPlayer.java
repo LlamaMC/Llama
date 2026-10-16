@@ -17,7 +17,6 @@ public interface IPlayer extends IHumanEntity {
 
     void kick(Component component);
     void ban(Component component);
-    void sudo(String command);
     void sendActionBar(Component component);
     void sendMessage(Component component);
     void sendBossBar(IBossBar bossBar);

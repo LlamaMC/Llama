@@ -56,17 +56,17 @@ public class Llama implements ILlama {
     private final CountDownLatch shutdownComplete = new CountDownLatch(1);
     private final AtomicReference<ShutdownRequest> shutdownRequest = new AtomicReference<>();
 
-    private LlamaConfig llamaConfig;
-    private PermissionsConfig permissionsConfig;
-    private WorldsConfig worldsConfig;
-    private GcPauseTracker gcPauseTracker;
-    private TickLoop tickLoop;
-    private TickScheduler scheduler;
-    private Watchdog watchdog;
-    private Console console;
-    private INetworkServer server;
-    private WorldManager worldManager;
-    private MinecraftRegistries registries;
+    private volatile LlamaConfig llamaConfig;
+    private volatile PermissionsConfig permissionsConfig;
+    private volatile WorldsConfig worldsConfig;
+    private volatile GcPauseTracker gcPauseTracker;
+    private volatile TickLoop tickLoop;
+    private volatile TickScheduler scheduler;
+    private volatile Watchdog watchdog;
+    private volatile Console console;
+    private volatile INetworkServer server;
+    private volatile WorldManager worldManager;
+    private volatile MinecraftRegistries registries;
 
     public void start() {
         var startedAt = System.nanoTime();
@@ -105,9 +105,6 @@ public class Llama implements ILlama {
         }
         if (llamaConfig.getMaxPlayers() == 0) {
             llamaConfig.setMaxPlayers(10);
-        }
-        if (!llamaConfig.isOnlineMode()) {
-            llamaConfig.setOnlineMode(false);
         }
         if (llamaConfig.getMinecraftVersion() == null) {
             llamaConfig.setMinecraftVersion("26.3");

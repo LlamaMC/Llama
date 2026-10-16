@@ -27,7 +27,7 @@ public final class ConfigFactory {
         try {
             Config config = configClass.getAnnotation(Config.class);
             if (config == null)
-                throw new IllegalStateException();
+                throw new IllegalStateException(configClass.getName() + " is not annotated with @Config");
             Path basePath = config.path().isEmpty() ? Paths.get(".") : Paths.get(config.path());
             if (!Files.exists(basePath)) Files.createDirectories(basePath);
             String fileName = config.name() + config.type().getExtension();
@@ -52,7 +52,7 @@ public final class ConfigFactory {
 
             return instance;
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            throw new RuntimeException("Could not load config " + configClass.getName(), e);
         }
     }
 
@@ -105,14 +105,15 @@ public final class ConfigFactory {
             if (p.getRawType() == Set.class && value instanceof List<?> list) return new HashSet<>(list);
             if (p.getRawType() == Map.class && value instanceof Map<?, ?>) return value;
         }
-        throw new IllegalStateException();
+        throw new IllegalStateException("Cannot convert " + value.getClass().getName()
+                + " to " + targetType.getTypeName());
     }
 
     public static <T> void save(T instance) {
         try {
             Class<?> clazz = instance.getClass();
             Config config = clazz.getAnnotation(Config.class);
-            if (config == null) throw new IllegalStateException();
+            if (config == null) throw new IllegalStateException(clazz.getName() + " is not annotated with @Config");
             Path basePath = config.path().isEmpty() ? Paths.get(".") : Paths.get(config.path());
             if (!Files.exists(basePath)) Files.createDirectories(basePath);
             String fileName = config.name() + config.type().getExtension();
@@ -140,7 +141,7 @@ public final class ConfigFactory {
             }
 
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            throw new RuntimeException("Could not save config " + instance.getClass().getName(), e);
         }
     }
 
