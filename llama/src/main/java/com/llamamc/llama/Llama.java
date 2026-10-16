@@ -15,6 +15,7 @@ import com.llamamc.llama.network.minecraft.ServerStatus;
 import com.llamamc.llama.network.minecraft.protocol.MinecraftProtocolVersion;
 import com.llamamc.llama.permission.PermissionService;
 import com.llamamc.llama.registry.MinecraftRegistries;
+import com.llamamc.llama.shutdown.ShutdownDeadline;
 import com.llamamc.llama.tick.TickLoop;
 import com.llamamc.llama.tick.TickMetrics;
 import com.llamamc.llama.tick.TickScheduler;
@@ -36,10 +37,15 @@ import com.llamamc.llamaapi.world.IWorldManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -50,10 +56,14 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public class Llama implements ILlama {
     private static final Logger LOGGER = LoggerFactory.getLogger("Llama");
-    private static final Duration TICK_STOP_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration HUNG_TICK = Duration.ofSeconds(5);
-    private static final Duration HUNG_TICK_STOP_TIMEOUT = Duration.ofSeconds(1);
-    private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(60);
+    // Stage budgets follow the windows in docs/ARCHITECTURE.md section 7. A stage waits for the smaller of its budget
+    // and the time left until the shutdown deadline.
+    private static final Duration TICK_STOP_BUDGET = Duration.ofSeconds(10);
+    private static final Duration HUNG_TICK_STOP_BUDGET = Duration.ofSeconds(1);
+    private static final Duration WATCHDOG_STOP_BUDGET = Duration.ofSeconds(1);
+    private static final Duration SERVER_CLOSE_BUDGET = Duration.ofSeconds(5);
+    private static final Duration WORLD_CLOSE_BUDGET = Duration.ofSeconds(35);
 
     private final Path crashReportDirectory = Path.of("crash-reports");
     private final IEventBus eventBus = new EventBus();
@@ -72,7 +82,7 @@ public class Llama implements ILlama {
     private volatile TickScheduler scheduler;
     private volatile Watchdog watchdog;
     private volatile Console console;
-    private volatile INetworkServer server;
+    private volatile MinecraftNetworkServer server;
     private volatile WorldManager worldManager;
     private volatile MinecraftRegistries registries;
 
@@ -201,22 +211,39 @@ public class Llama implements ILlama {
      * called {@link #awaitShutdown()}, so it never depends on the tick thread, which may be the one that hangs.
      */
     public void requestShutdown(ExitCode exitCode, String reason, Throwable cause, boolean crashReport) {
-        if (!shutdownRequest.compareAndSet(null, new ShutdownRequest(exitCode, reason, cause, crashReport))) {
+        var request = new ShutdownRequest(exitCode, reason, cause, crashReport, new ShutdownDeadline(System::nanoTime));
+        if (!shutdownRequest.compareAndSet(null, request)) {
             return;
         }
-        Thread.ofPlatform().name("Llama-Shutdown-Timeout").daemon().start(() -> {
-            try {
-                if (shutdownComplete.await(SHUTDOWN_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
-                    return;
-                }
-            } catch (InterruptedException e) {
+        Thread.ofPlatform().name("Llama-Shutdown-Timeout").daemon().start(() -> enforceDeadline(request.deadline()));
+        shutdownRequested.countDown();
+    }
+
+    private void enforceDeadline(ShutdownDeadline deadline) {
+        try {
+            if (shutdownComplete.await(deadline.remainingNanos(), TimeUnit.NANOSECONDS)) {
                 return;
             }
-            System.err.println("Shutdown did not finish within " + SHUTDOWN_TIMEOUT.toSeconds()
-                    + " s, halting the JVM");
-            Runtime.getRuntime().halt(exitCode.code());
-        });
-        shutdownRequested.countDown();
+        } catch (InterruptedException e) {
+            return;
+        }
+        haltAfterDeadline();
+    }
+
+    // The dump is written before the halt, because a halt skips every shutdown hook and leaves no other trace of the
+    // threads that kept the shutdown from finishing.
+    private void haltAfterDeadline() {
+        var dump = new StringBuilder();
+        for (var thread : Thread.getAllStackTraces().keySet()) {
+            dump.append(ThreadDumps.dump(thread)).append('\n');
+        }
+        var message = "Shutdown did not finish within " + ShutdownDeadline.BUDGET.toSeconds() + " s, halting the JVM";
+        // System.err is redirected to the console line reader, so the process stream is written directly.
+        var stderr = new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8);
+        stderr.println(message);
+        stderr.print(dump);
+        LOGGER.error("{}\n{}", message, dump);
+        Runtime.getRuntime().halt(ExitCode.ERROR.code());
     }
 
     public ExitCode awaitShutdown() throws InterruptedException {
@@ -236,32 +263,25 @@ public class Llama implements ILlama {
 
     private void runShutdown(ShutdownRequest request) {
         logShutdown(request);
+        var deadline = request.deadline();
+        var unfinished = new ArrayList<String>();
         if (console != null) {
             console.close();
         }
-        if (watchdog != null) {
-            watchdog.stop();
+        if (watchdog != null && !watchdog.stop(deadline.forStage(WATCHDOG_STOP_BUDGET))) {
+            unfinished.add("watchdog");
         }
-        if (tickLoop != null) {
-            var tickStart = tickLoop.tickStartNanos();
-            var hung = tickStart != 0 && System.nanoTime() - tickStart > HUNG_TICK.toNanos();
-            var timeout = hung ? HUNG_TICK_STOP_TIMEOUT : TICK_STOP_TIMEOUT;
-            if (!tickLoop.stop(timeout)) {
-                LOGGER.error("Tick thread did not stop within {} s", timeout.toSeconds());
-            }
+        if (tickLoop != null && !stopTickLoop(deadline)) {
+            unfinished.add("tick loop");
         }
         if (scheduler != null) {
             scheduler.close();
         }
-        if (server != null) {
-            server.close();
+        if (server != null && !server.close(deadline.forStage(SERVER_CLOSE_BUDGET))) {
+            unfinished.add("server");
         }
-        if (worldManager != null) {
-            try {
-                worldManager.close();
-            } catch (IOException error) {
-                LOGGER.error("Could not close worlds", error);
-            }
+        if (worldManager != null && !closeWorlds(deadline)) {
+            unfinished.add("world close");
         }
         if (request.crashReport()) {
             writeCrashReport(request);
@@ -270,6 +290,32 @@ public class Llama implements ILlama {
             gcPauseTracker.close();
         }
         LOGGER.info("Server stopped");
+        if (unfinished.isEmpty()) {
+            LOGGER.info("Shutdown complete");
+            return;
+        }
+        LOGGER.error("Shutdown incomplete, these stages did not finish in time: {}", unfinished);
+    }
+
+    private boolean stopTickLoop(ShutdownDeadline deadline) {
+        var tickStart = tickLoop.tickStartNanos();
+        var hung = tickStart != 0 && System.nanoTime() - tickStart > HUNG_TICK.toNanos();
+        var timeout = deadline.forStage(hung ? HUNG_TICK_STOP_BUDGET : TICK_STOP_BUDGET);
+        if (tickLoop.stop(timeout)) {
+            return true;
+        }
+        LOGGER.error("Tick thread did not stop within {} ms", timeout.toMillis());
+        return false;
+    }
+
+    private boolean closeWorlds(ShutdownDeadline deadline) {
+        try {
+            return worldManager.close(deadline.forStage(WORLD_CLOSE_BUDGET));
+        } catch (IOException error) {
+            // A failed write is not a clean shutdown either, so this counts as unfinished.
+            LOGGER.error("Could not close worlds", error);
+            return false;
+        }
     }
 
     private void logShutdown(ShutdownRequest request) {
@@ -355,6 +401,7 @@ public class Llama implements ILlama {
         return worldsConfig;
     }
 
-    private record ShutdownRequest(ExitCode exitCode, String reason, Throwable cause, boolean crashReport) {
+    private record ShutdownRequest(ExitCode exitCode, String reason, Throwable cause, boolean crashReport,
+                                   ShutdownDeadline deadline) {
     }
 }

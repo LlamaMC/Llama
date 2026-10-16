@@ -1,5 +1,6 @@
 package com.llamamc.llama;
 
+import com.llamamc.llama.shutdown.ShutdownDeadline;
 import org.apache.logging.log4j.LogManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -7,7 +8,8 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 
 public final class Main {
-    private static final Duration HOOK_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration HOOK_MARGIN = Duration.ofSeconds(5);
+    private static final Duration HOOK_TIMEOUT = ShutdownDeadline.BUDGET.plus(HOOK_MARGIN);
     private static final Duration EXIT_TIMEOUT = Duration.ofSeconds(10);
 
     private static volatile boolean jvmShuttingDown;
