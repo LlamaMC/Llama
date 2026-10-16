@@ -1,8 +1,10 @@
 package com.llamamc.llama.world;
 
+import com.llamamc.llama.shutdown.ShutdownDeadline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -13,7 +15,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 final class ChunkScheduler implements AutoCloseable {
     private static final Logger LOGGER = LoggerFactory.getLogger(ChunkScheduler.class);
-    private static final int SHUTDOWN_SECONDS = 30;
 
     private final ExecutorService generation;
     private final ExecutorService storage;
@@ -34,13 +35,27 @@ final class ChunkScheduler implements AutoCloseable {
         return storage;
     }
 
-    // Storage stays open until generation has terminated, because generation tasks still hand writes to it.
     @Override
     public void close() {
+        close(ShutdownDeadline.BUDGET);
+    }
+
+    /**
+     * Stops both pools within one budget. Storage stays open until generation has terminated, because generation
+     * tasks still hand writes to it. Tasks still queued when the budget runs out are dropped.
+     *
+     * @return {@code true} if both pools terminated within the budget
+     */
+    boolean close(Duration budget) {
+        if (budget == null) {
+            throw new NullPointerException("budget");
+        }
+        var deadlineNanos = System.nanoTime() + budget.toNanos();
         generation.shutdown();
-        await(generation);
+        var generationTerminated = await(generation, deadlineNanos);
         storage.shutdown();
-        await(storage);
+        var storageTerminated = await(storage, deadlineNanos);
+        return generationTerminated && storageTerminated;
     }
 
     // Work queues instead of running on the caller, and a rejection after shutdown fails the caller's future.
@@ -55,15 +70,18 @@ final class ChunkScheduler implements AutoCloseable {
         return task -> new WorldWorkerThread(task, prefix + counter.getAndIncrement());
     }
 
-    private static void await(ExecutorService executor) {
+    private static boolean await(ExecutorService executor, long deadlineNanos) {
         try {
-            if (executor.awaitTermination(SHUTDOWN_SECONDS, TimeUnit.SECONDS)) {
-                return;
+            var remaining = Math.max(0, deadlineNanos - System.nanoTime());
+            if (executor.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                return true;
             }
             reportDropped(executor.shutdownNow());
+            return false;
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             reportDropped(executor.shutdownNow());
+            return false;
         }
     }
 

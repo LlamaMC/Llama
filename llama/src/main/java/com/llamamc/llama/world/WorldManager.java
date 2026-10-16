@@ -1,6 +1,7 @@
 package com.llamamc.llama.world;
 
 import com.llamamc.llama.config.WorldsConfig;
+import com.llamamc.llama.shutdown.ShutdownDeadline;
 import com.llamamc.llama.world.vicuna.VicunaChunkStorage;
 import com.llamamc.llamaapi.world.DimensionType;
 import com.llamamc.llamaapi.world.IChunkGenerator;
@@ -10,6 +11,7 @@ import com.llamamc.llamaapi.world.WorldType;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -72,7 +74,17 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
 
     @Override
     public void close() throws IOException {
-        scheduler.close();
+        close(ShutdownDeadline.BUDGET);
+    }
+
+    /**
+     * Stops the chunk executors within the budget, then closes every world. The worlds are closed even when an
+     * executor misses the budget, because their storage still has to be closed.
+     *
+     * @return {@code false} if an executor did not terminate within the budget
+     */
+    public boolean close(Duration budget) throws IOException {
+        var terminated = scheduler.close(budget);
         IOException failure = null;
         for (var world : worlds.values()) {
             try {
@@ -88,6 +100,7 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
         if (failure != null) {
             throw failure;
         }
+        return terminated;
     }
 
     private static LlamaWorld create(String name, WorldsConfig.ConfigWorld config, Path rootDirectory,
