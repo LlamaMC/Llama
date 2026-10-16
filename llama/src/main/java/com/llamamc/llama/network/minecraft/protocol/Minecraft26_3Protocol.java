@@ -28,13 +28,18 @@ import com.llamamc.llamaapi.network.minecraft.packet.login.LoginDisconnectPacket
 import com.llamamc.llamaapi.network.minecraft.packet.login.LoginFinishedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.login.LoginStartPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.AcceptTeleportationPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.ChatCommandPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.ChatCommandSignedPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.ChatPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchReceivedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchFinishedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchStartPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ForgetLevelChunkPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.GameEvent;
 import com.llamamc.llamaapi.network.minecraft.packet.play.GameEventPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.LastSeenUpdate;
 import com.llamamc.llamaapi.network.minecraft.packet.play.LevelChunkWithLightPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.MessageSignature;
 import com.llamamc.llamaapi.network.minecraft.packet.play.MovePlayerPositionPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.MovePlayerPositionRotationPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.MovePlayerRotationPacket;
@@ -62,8 +67,10 @@ import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.EncoderException;
 import io.netty.util.CharsetUtil;
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -79,6 +86,11 @@ public final class Minecraft26_3Protocol {
     private static final int MAX_PROFILE_PROPERTIES = 16;
     private static final int MAX_USERNAME_CHARACTERS = 16;
     private static final int MAX_LOGIN_DISCONNECT_CHARACTERS = 262_144;
+    private static final int MAX_CHAT_MESSAGE_CHARACTERS = 256;
+    private static final int MAX_COMMAND_CHARACTERS = 32_767;
+    private static final int MAX_ARGUMENT_SIGNATURES = 8;
+    private static final int MAX_ARGUMENT_NAME_CHARACTERS = 16;
+    private static final int LAST_SEEN_WINDOW_SIZE = 20;
     private static final int NBT_TAG_STRING = 8;
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
@@ -174,6 +186,14 @@ public final class Minecraft26_3Protocol {
                 AcceptTeleportationPacket.class,
                 StreamCodec.of(Minecraft26_3Protocol::writeAcceptTeleportation,
                         Minecraft26_3Protocol::readAcceptTeleportation));
+        registry.register(DefaultProtocolState.PLAY, PacketFlow.SERVERBOUND, 0x07, ChatCommandPacket.class,
+                StreamCodec.of(Minecraft26_3Protocol::writeChatCommand,
+                        Minecraft26_3Protocol::readChatCommand));
+        registry.register(DefaultProtocolState.PLAY, PacketFlow.SERVERBOUND, 0x08, ChatCommandSignedPacket.class,
+                StreamCodec.of(Minecraft26_3Protocol::writeChatCommandSigned,
+                        Minecraft26_3Protocol::readChatCommandSigned));
+        registry.register(DefaultProtocolState.PLAY, PacketFlow.SERVERBOUND, 0x09, ChatPacket.class,
+                StreamCodec.of(Minecraft26_3Protocol::writeChat, Minecraft26_3Protocol::readChat));
         registry.register(DefaultProtocolState.PLAY, PacketFlow.SERVERBOUND, 0x0B,
                 ChunkBatchReceivedPacket.class,
                 StreamCodec.of((output, packet) -> output.writeFloat(packet.desiredChunksPerTick()),
@@ -911,6 +931,135 @@ public final class Minecraft26_3Protocol {
         }
 
         writeString(output, GSON.toJson(new JsonPrimitive(component.text())), MAX_LOGIN_DISCONNECT_CHARACTERS);
+    }
+
+    private static ChatPacket readChat(ByteBuf input) {
+        var message = readString(input, MAX_CHAT_MESSAGE_CHARACTERS);
+        var timestamp = Instant.ofEpochMilli(input.readLong());
+        var salt = input.readLong();
+        var signature = readOptionalMessageSignature(input);
+        var lastSeenMessages = readLastSeenUpdate(input);
+        requireFullyRead(input, "chat");
+        return new ChatPacket(message, timestamp, salt, signature, lastSeenMessages);
+    }
+
+    private static void writeChat(ByteBuf output, ChatPacket packet) {
+        writeString(output, packet.message(), MAX_CHAT_MESSAGE_CHARACTERS);
+        output.writeLong(packet.timestamp().toEpochMilli());
+        output.writeLong(packet.salt());
+        writeOptionalMessageSignature(output, packet.signature());
+        writeLastSeenUpdate(output, packet.lastSeenMessages());
+    }
+
+    private static ChatCommandPacket readChatCommand(ByteBuf input) {
+        var command = readString(input, MAX_COMMAND_CHARACTERS);
+        requireFullyRead(input, "chat command");
+        return new ChatCommandPacket(command);
+    }
+
+    private static void writeChatCommand(ByteBuf output, ChatCommandPacket packet) {
+        writeString(output, packet.command(), MAX_COMMAND_CHARACTERS);
+    }
+
+    private static ChatCommandSignedPacket readChatCommandSigned(ByteBuf input) {
+        var command = readString(input, MAX_COMMAND_CHARACTERS);
+        var timestamp = Instant.ofEpochMilli(input.readLong());
+        var salt = input.readLong();
+        var argumentSignatures = readArgumentSignatures(input);
+        var lastSeenMessages = readLastSeenUpdate(input);
+        requireFullyRead(input, "signed chat command");
+        return new ChatCommandSignedPacket(command, timestamp, salt, argumentSignatures, lastSeenMessages);
+    }
+
+    private static void writeChatCommandSigned(ByteBuf output, ChatCommandSignedPacket packet) {
+        writeString(output, packet.command(), MAX_COMMAND_CHARACTERS);
+        output.writeLong(packet.timestamp().toEpochMilli());
+        output.writeLong(packet.salt());
+        writeArgumentSignatures(output, packet.argumentSignatures());
+        writeLastSeenUpdate(output, packet.lastSeenMessages());
+    }
+
+    private static List<ChatCommandSignedPacket.ArgumentSignature> readArgumentSignatures(ByteBuf input) {
+        var count = readCount(input, MAX_ARGUMENT_SIGNATURES, "argument signatures");
+        var signatures = new ArrayList<ChatCommandSignedPacket.ArgumentSignature>(count);
+
+        for (var index = 0; index < count; index++) {
+            var name = readString(input, MAX_ARGUMENT_NAME_CHARACTERS);
+            var signature = readMessageSignature(input);
+            signatures.add(new ChatCommandSignedPacket.ArgumentSignature(name, signature));
+        }
+
+        return signatures;
+    }
+
+    private static void writeArgumentSignatures(ByteBuf output,
+                                                List<ChatCommandSignedPacket.ArgumentSignature> signatures) {
+        writeCount(output, signatures.size(), MAX_ARGUMENT_SIGNATURES, "argument signatures");
+
+        for (var signature : signatures) {
+            writeString(output, signature.name(), MAX_ARGUMENT_NAME_CHARACTERS);
+            writeMessageSignature(output, signature.signature());
+        }
+    }
+
+    private static MessageSignature readOptionalMessageSignature(ByteBuf input) {
+        if (!input.readBoolean()) {
+            return null;
+        }
+
+        return readMessageSignature(input);
+    }
+
+    private static void writeOptionalMessageSignature(ByteBuf output, MessageSignature signature) {
+        output.writeBoolean(signature != null);
+
+        if (signature == null) {
+            return;
+        }
+
+        writeMessageSignature(output, signature);
+    }
+
+    private static MessageSignature readMessageSignature(ByteBuf input) {
+        var bytes = new byte[MessageSignature.BYTES];
+        input.readBytes(bytes);
+        return new MessageSignature(bytes);
+    }
+
+    private static void writeMessageSignature(ByteBuf output, MessageSignature signature) {
+        output.writeBytes(signature.bytes());
+    }
+
+    private static LastSeenUpdate readLastSeenUpdate(ByteBuf input) {
+        var offset = readVarInt(input);
+        var acknowledged = readFixedBitSet(input, LAST_SEEN_WINDOW_SIZE);
+        var checksum = input.readByte();
+        return new LastSeenUpdate(offset, acknowledged, checksum);
+    }
+
+    private static void writeLastSeenUpdate(ByteBuf output, LastSeenUpdate update) {
+        writeVarInt(output, update.offset());
+        writeFixedBitSet(output, update.acknowledged(), LAST_SEEN_WINDOW_SIZE);
+        output.writeByte(update.checksum());
+    }
+
+    // Bit i lives in bit (i % 8) of byte (i / 8), as java.util.BitSet stores it.
+    private static BitSet readFixedBitSet(ByteBuf input, int size) {
+        var bytes = new byte[fixedBitSetBytes(size)];
+        input.readBytes(bytes);
+        return BitSet.valueOf(bytes);
+    }
+
+    private static void writeFixedBitSet(ByteBuf output, BitSet bits, int size) {
+        if (bits.length() > size) {
+            throw new EncoderException("Bit set has " + bits.length() + " bits, the limit is " + size);
+        }
+
+        output.writeBytes(Arrays.copyOf(bits.toByteArray(), fixedBitSetBytes(size)));
+    }
+
+    private static int fixedBitSetBytes(int size) {
+        return (size + Byte.SIZE - 1) / Byte.SIZE;
     }
 
     private static UUID readUuid(ByteBuf input) {

@@ -17,6 +17,10 @@ import org.junit.jupiter.api.Timeout;
 
 import java.nio.charset.StandardCharsets;
 
+import static com.llamamc.llama.network.minecraft.protocol.ProtocolTestBuffers.readString;
+import static com.llamamc.llama.network.minecraft.protocol.ProtocolTestBuffers.readVarInt;
+import static com.llamamc.llama.network.minecraft.protocol.ProtocolTestBuffers.writeString;
+import static com.llamamc.llama.network.minecraft.protocol.ProtocolTestBuffers.writeVarInt;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -151,40 +155,4 @@ class Minecraft26_3DisconnectProtocolTest {
         }
     }
 
-    private static int readVarInt(ByteBuf input) {
-        var result = 0;
-
-        for (var position = 0; position < 5; position++) {
-            var value = input.readByte() & 0xFF;
-            result |= (value & 0x7F) << position * 7;
-
-            if ((value & 0x80) == 0) {
-                return result;
-            }
-        }
-
-        throw new IllegalStateException("Invalid VarInt");
-    }
-
-    private static void writeVarInt(ByteBuf output, int value) {
-        var remaining = value;
-
-        while ((remaining & ~0x7F) != 0) {
-            output.writeByte(remaining & 0x7F | 0x80);
-            remaining >>>= 7;
-        }
-
-        output.writeByte(remaining);
-    }
-
-    private static String readString(ByteBuf input) {
-        var length = readVarInt(input);
-        return input.readCharSequence(length, StandardCharsets.UTF_8).toString();
-    }
-
-    private static void writeString(ByteBuf output, String value) {
-        var bytes = value.getBytes(StandardCharsets.UTF_8);
-        writeVarInt(output, bytes.length);
-        output.writeBytes(bytes);
-    }
 }
