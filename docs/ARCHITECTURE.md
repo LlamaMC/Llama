@@ -164,9 +164,10 @@ Decision: no blocking future waits on the tick thread or on worker threads.
 - Every asynchronous step names its executor, and nothing runs on the common pool by accident. The exceptions are the
   inline stages: `whenComplete` and `exceptionally` in `LlamaPromise`, `thenApply` and `thenCompose` in `LlamaPromise`
   (these use `Runnable::run`, and each carries a comment saying why), and the non-async `thenCompose` and
-  `whenComplete` in the chunk load chain. An inline stage runs on the thread that settles its source, or on the calling
-  thread when the source is already settled. World results are applied on the thread that completes the load, not on
-  the tick thread, because the world state is a concurrent map and needs no tick hand-off. Section 10 records that the
+  `whenComplete` in the chunk load chain. An inline stage runs on the thread that settles its source, or on the thread
+  that adds the stage when the source is already settled or when that thread wins the race with the settling thread.
+  World results are applied on the thread that completes the load, not on the tick thread, because the world state is a
+  concurrent map and needs no tick hand-off. Section 10 records that the
   code differs from the tick-thread hand-off in the decision above.
 - Llama's own blocking chunk methods (`chunkNow`) throw on the tick thread and on world worker threads. This is in
   place today.
