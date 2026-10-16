@@ -8,6 +8,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -31,11 +32,13 @@ final class VicunaRegionFile implements AutoCloseable {
     private static final String TEMPORARY_SUFFIX = ".tmp";
     private static final IFileMover REPLACE_ATOMICALLY = (source, target) ->
             Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    private static final IChannelOpener OPEN_FILE = FileChannel::open;
 
     private final Path path;
     private final int regionX;
     private final int regionZ;
     private final IFileMover mover;
+    private final IChannelOpener opener;
 
     private FileChannel channel;
     private Entry[] entries;
@@ -43,20 +46,27 @@ final class VicunaRegionFile implements AutoCloseable {
     private int activeDirectory;
     // Bytes of the data area that no directory entry references, counted in whole sectors.
     private long deadBytes;
+    // Set when reopening the region file failed, so the channel and entries no longer match the file on disk.
+    private IOException reopenFailure;
 
     VicunaRegionFile(Path path, int regionX, int regionZ) throws IOException {
-        this(path, regionX, regionZ, REPLACE_ATOMICALLY);
+        this(path, regionX, regionZ, REPLACE_ATOMICALLY, OPEN_FILE);
     }
 
     VicunaRegionFile(Path path, int regionX, int regionZ, IFileMover mover) throws IOException {
+        this(path, regionX, regionZ, mover, OPEN_FILE);
+    }
+
+    VicunaRegionFile(Path path, int regionX, int regionZ, IFileMover mover, IChannelOpener opener) throws IOException {
         this.path = path;
         this.regionX = regionX;
         this.regionZ = regionZ;
         this.mover = mover;
+        this.opener = opener;
         Files.createDirectories(path.getParent());
         // A temporary file is only left by a compaction that did not reach the move, so the region file stays the authority.
         Files.deleteIfExists(temporaryPath(path));
-        channel = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        channel = opener.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
 
         if (channel.size() == 0) {
             initialize();
@@ -68,6 +78,7 @@ final class VicunaRegionFile implements AutoCloseable {
 
     synchronized Optional<ChunkPayload> read(int index) throws IOException {
         checkIndex(index);
+        requireUsable();
         var entry = entries[index];
         if (entry.empty()) {
             return Optional.empty();
@@ -84,6 +95,7 @@ final class VicunaRegionFile implements AutoCloseable {
 
     synchronized void write(int index, ChunkPayload payload) throws IOException {
         checkIndex(index);
+        requireUsable();
         var bytes = payload.nbt();
         var offset = align(channel.size());
         writeFully(ByteBuffer.wrap(bytes), offset);
@@ -102,7 +114,12 @@ final class VicunaRegionFile implements AutoCloseable {
         return deadBytes;
     }
 
+    synchronized boolean failed() {
+        return reopenFailure != null;
+    }
+
     synchronized void compactIfNeeded() throws IOException {
+        requireUsable();
         var size = channel.size();
         if (size < MIN_COMPACTION_BYTES || deadBytes * 2 <= size) {
             return;
@@ -113,6 +130,7 @@ final class VicunaRegionFile implements AutoCloseable {
 
     // The old file stays authoritative until the move succeeds, so a crash or a failed move leaves a readable region.
     synchronized void compact() throws IOException {
+        requireUsable();
         var temporary = temporaryPath(path);
         Files.deleteIfExists(temporary);
         var rewritten = copyLiveTo(temporary);
@@ -126,7 +144,13 @@ final class VicunaRegionFile implements AutoCloseable {
             throw error;
         }
 
-        channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        try {
+            channel = opener.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        } catch (IOException error) {
+            // The file was replaced, but the entries still point into the old one, so nothing may read through this region.
+            reopenFailure = error;
+            throw error;
+        }
         entries = rewritten.entries;
         generation = rewritten.generation;
         activeDirectory = rewritten.activeDirectory;
@@ -140,7 +164,7 @@ final class VicunaRegionFile implements AutoCloseable {
     }
 
     private VicunaRegionFile copyLiveTo(Path temporary) throws IOException {
-        try (var rewritten = new VicunaRegionFile(temporary, regionX, regionZ, mover)) {
+        try (var rewritten = new VicunaRegionFile(temporary, regionX, regionZ, mover, opener)) {
             rewritten.copyLiveFrom(this);
             return rewritten;
         } catch (IOException | RuntimeException error) {
@@ -260,12 +284,23 @@ final class VicunaRegionFile implements AutoCloseable {
         return bytes;
     }
 
+    // The move failed, so the file on disk is still the old one; only a reopen that fails leaves the region unusable.
     private void reopenAfterFailedMove(IOException failure) {
         try {
-            channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+            channel = opener.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
         } catch (IOException error) {
             failure.addSuppressed(error);
+            reopenFailure = error;
         }
+    }
+
+    private void requireUsable() throws IOException {
+        if (reopenFailure == null) {
+            return;
+        }
+
+        throw new IOException("VICUÑA region " + regionX + "," + regionZ
+                + " is unusable after a failed reopen and must be reopened from disk", reopenFailure);
     }
 
     private static void discard(Path temporary, Throwable failure) {
@@ -429,6 +464,11 @@ final class VicunaRegionFile implements AutoCloseable {
     @FunctionalInterface
     interface IFileMover {
         void move(Path source, Path target) throws IOException;
+    }
+
+    @FunctionalInterface
+    interface IChannelOpener {
+        FileChannel open(Path target, OpenOption... options) throws IOException;
     }
 
     private record Commit(long generation, int directory, int directoryChecksum, int slotChecksum) {

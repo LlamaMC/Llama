@@ -67,9 +67,25 @@ public final class VicunaChunkStorage implements IChunkStorage {
     private VicunaRegionFile region(ChunkPosition position) throws IOException {
         var regionPosition = new RegionPosition(position.regionX(), position.regionZ());
         try {
+            var region = regions.computeIfAbsent(regionPosition, this::open);
+            if (!region.failed()) {
+                return region;
+            }
+
+            // A failed region holds entries for a file it can no longer read, so this access reopens it from disk.
+            regions.remove(regionPosition, region);
+            closeFailed(region, position);
             return regions.computeIfAbsent(regionPosition, this::open);
         } catch (UncheckedIOException error) {
             throw error.getCause();
+        }
+    }
+
+    private static void closeFailed(VicunaRegionFile region, ChunkPosition position) {
+        try {
+            region.close();
+        } catch (IOException error) {
+            LOGGER.warn("Could not close failed VICUÑA region {},{}", position.regionX(), position.regionZ(), error);
         }
     }
 
