@@ -5,10 +5,10 @@ import java.util.function.LongSupplier;
 
 /**
  * The one deadline for a whole shutdown. It starts when a shutdown is requested, and every stage waits for at most
- * the time left until it.
+ * the time left until it. The deadline is the sum of the {@link ShutdownWindow} budgets.
  */
 public final class ShutdownDeadline {
-    public static final Duration BUDGET = Duration.ofSeconds(60);
+    public static final Duration BUDGET = totalBudget();
 
     private final LongSupplier nanoTime;
     private final long deadlineNanos;
@@ -36,6 +36,16 @@ public final class ShutdownDeadline {
     }
 
     /**
+     * @return the window's budget, or the time left if that is shorter
+     */
+    public Duration forWindow(ShutdownWindow window) {
+        if (window == null) {
+            throw new NullPointerException("window");
+        }
+        return forStage(window.budget());
+    }
+
+    /**
      * @return the stage budget, or the time left if that is shorter
      */
     public Duration forStage(Duration stageBudget) {
@@ -44,5 +54,13 @@ public final class ShutdownDeadline {
         }
         var left = remaining();
         return stageBudget.compareTo(left) <= 0 ? stageBudget : left;
+    }
+
+    private static Duration totalBudget() {
+        var total = Duration.ZERO;
+        for (var window : ShutdownWindow.values()) {
+            total = total.plus(window.budget());
+        }
+        return total;
     }
 }

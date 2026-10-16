@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @Timeout(10)
 class ShutdownDeadlineTest {
@@ -37,5 +38,41 @@ class ShutdownDeadlineTest {
         clock.set(Duration.ofSeconds(61).toNanos());
         assertEquals(Duration.ZERO, deadline.remaining());
         assertEquals(Duration.ZERO, deadline.forStage(Duration.ofSeconds(10)));
+    }
+
+    @Test
+    void windowsMatchTheTimesInSectionSeven() {
+        assertEquals(Duration.ofSeconds(5), ShutdownWindow.INTAKE.budget());
+        assertEquals(Duration.ofSeconds(10), ShutdownWindow.FREEZE.budget());
+        assertEquals(Duration.ofSeconds(35), ShutdownWindow.PERSIST.budget());
+        assertEquals(Duration.ofSeconds(10), ShutdownWindow.TEARDOWN.budget());
+    }
+
+    @Test
+    void deadlineIsTheSumOfTheWindows() {
+        assertEquals(Duration.ofSeconds(60), ShutdownDeadline.BUDGET);
+    }
+
+    @Test
+    void windowGetsItsBudgetWhenTimeIsPlentiful() {
+        assertEquals(Duration.ofSeconds(35), deadline.forWindow(ShutdownWindow.PERSIST));
+    }
+
+    @Test
+    void windowIsCappedByTheTimeLeftUntilTheDeadline() {
+        clock.set(Duration.ofSeconds(30).toNanos());
+        assertEquals(Duration.ofSeconds(30), deadline.forWindow(ShutdownWindow.PERSIST));
+    }
+
+    @Test
+    void lateWindowGetsWhatIsLeft() {
+        clock.set(Duration.ofSeconds(55).toNanos());
+        assertEquals(Duration.ofSeconds(5), deadline.forWindow(ShutdownWindow.TEARDOWN));
+    }
+
+    @Test
+    void nullArgumentsAreRejected() {
+        assertThrows(NullPointerException.class, () -> deadline.forWindow(null));
+        assertThrows(NullPointerException.class, () -> deadline.forStage(null));
     }
 }

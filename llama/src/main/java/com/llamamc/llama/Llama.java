@@ -18,6 +18,7 @@ import com.llamamc.llama.plugin.PluginLoader;
 import com.llamamc.llama.player.PlayerLifecycle;
 import com.llamamc.llama.registry.MinecraftRegistries;
 import com.llamamc.llama.shutdown.ShutdownDeadline;
+import com.llamamc.llama.shutdown.ShutdownWindow;
 import com.llamamc.llama.tick.TickLoop;
 import com.llamamc.llama.tick.TickMetrics;
 import com.llamamc.llama.tick.TickScheduler;
@@ -62,14 +63,9 @@ import java.util.concurrent.atomic.AtomicReference;
 public class Llama implements ILlama {
     private static final Logger LOGGER = LoggerFactory.getLogger("Llama");
     private static final Duration HUNG_TICK = Duration.ofSeconds(5);
-    // Stage budgets follow the windows in docs/ARCHITECTURE.md section 7. A stage waits for the smaller of its budget
-    // and the time left until the shutdown deadline.
-    private static final Duration TICK_STOP_BUDGET = Duration.ofSeconds(10);
+    // Each stage waits for its ShutdownWindow budget, or the time left until the deadline when that is shorter. A hung
+    // tick thread never stops, so the freeze waits only HUNG_TICK_STOP_BUDGET for it.
     private static final Duration HUNG_TICK_STOP_BUDGET = Duration.ofSeconds(1);
-    private static final Duration WATCHDOG_STOP_BUDGET = Duration.ofSeconds(1);
-    private static final Duration PLAYER_DISCONNECT_BUDGET = Duration.ofSeconds(5);
-    private static final Duration SERVER_CLOSE_BUDGET = Duration.ofSeconds(5);
-    private static final Duration WORLD_CLOSE_BUDGET = Duration.ofSeconds(35);
 
     private final Path crashReportDirectory = Path.of("crash-reports");
     private final IEventBus eventBus = new EventBus();
@@ -284,12 +280,12 @@ public class Llama implements ILlama {
         if (console != null) {
             console.close();
         }
-        if (watchdog != null && !watchdog.stop(deadline.forStage(WATCHDOG_STOP_BUDGET))) {
+        if (watchdog != null && !watchdog.stop(deadline.forWindow(ShutdownWindow.FREEZE))) {
             unfinished.add("watchdog");
         }
         // Plugins disable while the tick loop still runs, so their tasks can finish before the scheduler closes.
-        if (plugins != null) {
-            plugins.disableAll();
+        if (!disablePlugins(deadline)) {
+            unfinished.add("plugins");
         }
         if (tickLoop != null && !stopTickLoop(deadline)) {
             unfinished.add("tick loop");
@@ -297,7 +293,7 @@ public class Llama implements ILlama {
         if (scheduler != null) {
             scheduler.close();
         }
-        if (server != null && !server.close(deadline.forStage(SERVER_CLOSE_BUDGET))) {
+        if (server != null && !server.close(deadline.forWindow(ShutdownWindow.TEARDOWN))) {
             unfinished.add("server");
         }
         if (worldManager != null && !closeWorlds(deadline)) {
@@ -326,7 +322,7 @@ public class Llama implements ILlama {
         }
         var done = new CountDownLatch(1);
         lifecycle.disconnectAll().whenComplete((ignored, error) -> done.countDown());
-        awaitLatch(done, deadline.forStage(PLAYER_DISCONNECT_BUDGET));
+        awaitLatch(done, deadline.forWindow(ShutdownWindow.INTAKE));
         var stillOnline = lifecycle.registry().online().size();
         if (stillOnline == 0) {
             return true;
@@ -335,18 +331,41 @@ public class Llama implements ILlama {
         return false;
     }
 
-    private static void awaitLatch(CountDownLatch latch, Duration budget) {
+    // disableAll() has no timeout of its own, so it runs on a daemon thread that the freeze window waits for. A plugin
+    // that never returns from disable() leaves that thread behind, and the deadline still halts the JVM.
+    private boolean disablePlugins(ShutdownDeadline deadline) {
+        var loader = plugins;
+        if (loader == null) {
+            return true;
+        }
+        var done = new CountDownLatch(1);
+        Thread.ofPlatform().name("Llama-Plugin-Disable").daemon().start(() -> {
+            try {
+                loader.disableAll();
+            } finally {
+                done.countDown();
+            }
+        });
+        if (awaitLatch(done, deadline.forWindow(ShutdownWindow.FREEZE))) {
+            return true;
+        }
+        LOGGER.error("Plugins did not finish disabling within the shutdown budget");
+        return false;
+    }
+
+    private static boolean awaitLatch(CountDownLatch latch, Duration budget) {
         try {
-            latch.await(budget.toNanos(), TimeUnit.NANOSECONDS);
+            return latch.await(budget.toNanos(), TimeUnit.NANOSECONDS);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
+            return false;
         }
     }
 
     private boolean stopTickLoop(ShutdownDeadline deadline) {
         var tickStart = tickLoop.tickStartNanos();
         var hung = tickStart != 0 && System.nanoTime() - tickStart > HUNG_TICK.toNanos();
-        var timeout = deadline.forStage(hung ? HUNG_TICK_STOP_BUDGET : TICK_STOP_BUDGET);
+        var timeout = hung ? deadline.forStage(HUNG_TICK_STOP_BUDGET) : deadline.forWindow(ShutdownWindow.FREEZE);
         if (tickLoop.stop(timeout)) {
             return true;
         }
@@ -356,7 +375,7 @@ public class Llama implements ILlama {
 
     private boolean closeWorlds(ShutdownDeadline deadline) {
         try {
-            return worldManager.close(deadline.forStage(WORLD_CLOSE_BUDGET));
+            return worldManager.close(deadline.forWindow(ShutdownWindow.PERSIST));
         } catch (IOException error) {
             // A failed write is not a clean shutdown either, so this counts as unfinished.
             LOGGER.error("Could not close worlds", error);
