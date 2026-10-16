@@ -101,7 +101,7 @@ LlamaFuture<Integer> answer = scheduler.supplyAsync(() -> 6 * 7);
 - **Errors go into the future** for `runOnTick`, `callOnTick` and `supplyAsync`. `join()` throws `LlamaPromise.LlamaAsyncException`, with the cause attached, for a failed future. It throws `LlamaPromise.LlamaCancelledException` for a cancelled one. `await()` throws the same exceptions and also `InterruptedException`.
 - **Do not `join()` from the tick thread.** The task behind a future from `runOnTick` or `callOnTick` can only run on the tick thread. Joining that future there blocks the thread the task needs, so the wait never ends. Nothing enforces this rule (section 9). Use `whenComplete` instead.
 - **`supplyAsync`** runs its supplier on a virtual thread. Use it for blocking work, then hand the result back with `runOnTick`.
-- **Callbacks.** A callback from `whenComplete`, `thenApply` or `thenCompose` runs on the thread that settles the future, or on the thread that adds the callback when the future is already settled or when that thread wins the race with the settling thread. A callback on an already settled future runs synchronously on the calling thread, which includes the tick thread. `thenApplyAsync` and `thenComposeAsync` take an `Executor` when you need a particular thread. A callback that throws is handed to that thread's uncaught-exception handler, and the other callbacks still run.
+- **Callbacks.** A callback from `whenComplete`, `thenApply` or `thenCompose` runs on the thread that settles the future, or on the thread that adds the callback when the future is already settled or when that thread wins the race with the settling thread. A callback on an already settled future runs synchronously on the calling thread, which includes the tick thread. `thenApplyAsync` and `thenComposeAsync` take an `Executor` when you need a particular thread. A `whenComplete` callback that throws is handed to that thread's uncaught-exception handler, and the other callbacks still run. A `thenApply` or `thenCompose` function that throws fails the derived future, and nothing goes to the uncaught-exception handler.
 - **`isTickThread()`** is true only on the current tick thread.
 
 A common pattern is to compute off the tick thread and apply the result on it:
@@ -167,7 +167,7 @@ llama.scheduler().supplyAsync(() -> llama.worlds().mainWorld().chunkNow(0, 0))
 | `IScheduler.runLaterTicks` | any | no | `ITaskHandle.cancel()` is safe from any thread. |
 | `IScheduler.supplyAsync` | any | no | The supplier runs on a virtual thread. |
 | `LlamaFuture.join()`, `await()` | not the tick thread | yes | Deadlocks on tick-thread work. Not enforced. |
-| `LlamaFuture.whenComplete`, `thenApply`, `thenCompose` | any | no | Run on the completing thread, or on the caller if already done. |
+| `LlamaFuture.whenComplete`, `thenApply`, `thenCompose` | any | no | Run on the thread that settles the future, or on the thread that adds the callback when the future is already settled or when that thread wins the race with the settling thread. |
 | `IWorld.loadedChunk` | any | no | Reads committed state only, and never starts a load. |
 | `IWorld.chunk` | any | no | Starts a load if one is needed. |
 | `IWorld.chunkNow` | not the tick thread, not a world worker | yes | Throws `IllegalStateException` on both. The tick check depends on the runtime's predicate. |
