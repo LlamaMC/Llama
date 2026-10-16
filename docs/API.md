@@ -331,10 +331,21 @@ llama.commands().register(owner, new RepeatCommands());
 - **Argument types.** The `ArgumentType` must match the Java type: `String` takes `STRING` or `PLAYER_NAME`, `int` takes `INTEGER`, `long` takes `LONG`, `double` takes `DOUBLE`, `UUID` takes `UUID`, and `Duration` takes `DURATION`. A `Duration` is a whole number with a unit: `s`, `m`, `h` or `d`, as in `30s` or `2h`. A `double` must be finite.
 - **Parsing.** The parameters are filled in `position` order from the words after the label. A missing required argument, or more words than parameters, replies `Usage: <name> <required> [optional]` and the method does not run. A word that does not parse replies `Invalid <name> '<word>': expected <type>` and the method does not run. A missing optional argument is passed as `null`.
 - **Failures.** If a command throws a `RuntimeException`, the registry logs it and replies with `Command failed: ` followed by the message. A checked exception from a method handler is wrapped in an `IllegalStateException` and reported the same way.
-- **Threads.** Commands run on the thread that calls `dispatch`. For console input that is the console thread, not the tick thread, so work that changes server state must go through the scheduler, for example `runOnTick`.
+- **Threads.** Commands run on the thread that calls `dispatch`. For console input that is the console thread, not the tick thread, so work that changes server state must go through the scheduler, for example `runOnTick`. Commands that players send are the exception: the runtime dispatches them on the tick thread.
 - **Console.** The console passes each line that matches none of its own commands to the registry, with the console sender. Its own commands run first, so a console command such as `stop` takes precedence over a registry command with the same label.
 - **Permissions.** Before a command runs, `dispatch` checks `sender.hasPermission(node)`. The node is the `permission` value on `@Command` when that value is not blank. Otherwise it is `llama.command.` followed by the command's name in lower case. Aliases use the node of their command. The node is registered with `PermissionDefault.OP`. A sender without the node gets `You do not have permission to use this command.`, the command does not run, and `dispatch` still returns true, because the line matched a command.
 - **Permission service.** `llama.permissions()` returns an `IPermissionService`. `register(node, PermissionDefault)` declares a node, and `hasPermission(uuid, node)` resolves it. Resolution order: an explicit grant for the user in `permissions.toml`, then a grant through one of the user's groups, then the node's default. `TRUE` grants, `FALSE` denies, and `OP` grants only when the user holds `llama.op`. A node that is not registered and not granted is denied. Registering a node again with the same default does nothing. Registering it with a different default throws `IllegalStateException`.
+
+### Players
+
+Players move through a fixed sequence of events. Every event runs on the tick thread, so a handler may change server state directly.
+
+- **Order.** `PlayerPreJoinEvent` comes first, after login and the configuration state have finished. It carries the UUID and name, and it is cancelable. Cancel it and set a reason with `setReason(...)` to disconnect the player with that text. Without a reason the player sees "You cannot join this server.", and the player is never registered. For an accepted player, `PlayerJoinEvent` fires after the play login packet has been sent.
+- **Quit.** `PlayerQuitEvent` fires once for each registered player. A kick, a client that leaves and a lost connection all end the session. A second login with the same UUID kicks the old session with "You logged in from another location.", and the old session's quit fires before the new one is registered.
+- **Registry.** `llama.players()` returns an `IPlayerRegistry`. `online()` is an immutable list taken when it is called. `byUuid(uuid)` and `byName(name)` return an `Optional`, and `byName` ignores case. Every lookup works from any thread.
+- **`IPlayer`.** `uniqueId()` and `name()` identify the player. `clientBrand()` is the `minecraft:brand` value the client sent during configuration, or `"unknown"`. `snapshot()` returns an immutable `PlayerSnapshot` of the UUID, name and brand. `hasPermission(node)` returns a `LlamaFuture<Boolean>`. `kick(reason)` sends the disconnect and then closes the connection. `sendMessage(message)` sends a system message.
+- **Chat format.** A chat line from a player posts a `ChatEvent`. If no handler cancels the event, every online player receives `<name> message` as a system message, with the message text unchanged. Signatures are read and ignored. Without a `ChatEvent` handler this plain format is used.
+- **Commands.** A command line from a player goes to `commands().dispatch` with a sender that checks the player's permissions. A line that matches no command gets the reply `Unknown command.`
 
 ## Plugins
 
@@ -361,8 +372,6 @@ A plugin is a jar in the `plugins/` directory, which is created when missing. It
 
 ## 9. Not yet implemented
 
-- **Player registry and `IPlayer` implementation.** `IPlayer` has no implementing class, and `ILlama` has no player accessor.
-- **Posting player and chat events.** `PlayerJoinEvent`, `PlayerLeaveEvent`, `PlayerConfigureEvent` and `ChatEvent` are defined, but nothing in the runtime posts them, so their handlers never run.
 - **Network interceptors and listeners.** `InterceptorRegistry`, `InboundInterceptor` and `INetworkListener` exist in `llama-api`. The runtime does not use them, and `INetworkServer` does not expose them.
 - **Direct palettes.** A section with more block states than the indirect palette allows fails to encode, with the message "direct palettes are not implemented".
 - **Draining queued tasks at scheduler close.** Queued tasks are failed or cancelled when the scheduler closes. They are not run.
