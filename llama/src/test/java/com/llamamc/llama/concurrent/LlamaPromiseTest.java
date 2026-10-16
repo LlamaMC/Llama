@@ -110,6 +110,33 @@ class LlamaPromiseTest {
     }
 
     @Test
+    @Timeout(10)
+    void throwingHandlerDoesNotStopLaterListenersOrReachTheSettlingThread() {
+        var promise = new LlamaPromise<String>();
+        var handled = new AtomicInteger();
+        var laterCalls = new AtomicInteger();
+        var previousHandler = Thread.currentThread().getUncaughtExceptionHandler();
+        Thread.currentThread().setUncaughtExceptionHandler((thread, error) -> {
+            handled.incrementAndGet();
+            throw new IllegalStateException("handler failed");
+        });
+        try {
+            promise.future().whenComplete((v, err) -> {
+                throw new IllegalStateException("listener failed");
+            });
+            promise.future().whenComplete((v, err) -> laterCalls.incrementAndGet());
+
+            // Settling runs the failing listener and handler here, so an exception that escapes fails this test.
+            promise.complete("done");
+        } finally {
+            Thread.currentThread().setUncaughtExceptionHandler(previousHandler);
+        }
+
+        assertEquals(1, handled.get());
+        assertEquals(1, laterCalls.get());
+    }
+
+    @Test
     void rejectingExecutorFailsDerivedFutureWhenSourceCompletesLater() {
         var source = new LlamaPromise<String>();
         Executor rejecting = task -> {

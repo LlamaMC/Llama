@@ -168,8 +168,8 @@ Decision: no blocking future waits on the tick thread or on worker threads.
   (`thenApply` and `thenCompose` use `Runnable::run`, and each carries a comment saying why), and the non-async
   `thenCompose` and `whenComplete` in the chunk load chain. An inline stage runs on the thread that settles its source,
   or on the thread that adds the stage when the source is already settled or when that thread wins the race with the
-  settling thread. A throwing `whenComplete` callback goes to the thread's uncaught-exception handler, and a throwing
-  `thenApply` or `thenCompose` function fails the derived future instead.
+  settling thread. A throwing `whenComplete` callback goes to the thread's uncaught-exception handler, which drops
+  anything it throws in turn. A throwing `thenApply` or `thenCompose` function fails the derived future instead.
   World results are applied on the thread that completes the load, not on the tick thread, because the world state is a
   concurrent map and needs no tick hand-off. Section 10 records that the
   code differs from the tick-thread hand-off in the decision above.

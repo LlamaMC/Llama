@@ -77,7 +77,23 @@ public final class LlamaPromise<T> {
             try {
                 listener.accept(settled.value(), settled.failure());
             } catch (Throwable t) {
-                Thread.currentThread().getUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), t);
+                reportToHandler(t);
+            }
+        }
+
+        // The handler is user code too. If it throws, that exception is dropped, so drain still reaches the listeners
+        // queued behind the failing one and the settling thread never sees it.
+        private static void reportToHandler(Throwable error) {
+            var thread = Thread.currentThread();
+            var handler = thread.getUncaughtExceptionHandler();
+            if (handler == null) {
+                return;
+            }
+
+            try {
+                handler.uncaughtException(thread, error);
+            } catch (Throwable ignored) {
+                // Dropped on purpose, as described above.
             }
         }
 
