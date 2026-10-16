@@ -54,6 +54,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -64,8 +65,6 @@ public final class Minecraft26_3Protocol {
     private static final int MAX_KNOWN_PACKS = 64;
     private static final int MAX_PROFILE_PROPERTIES = 16;
     private static final int MAX_USERNAME_CHARACTERS = 16;
-    private static final int MIN_PALETTE_BITS = 4;
-    private static final int MAX_PALETTE_BITS = 8;
 
     private Minecraft26_3Protocol() {
     }
@@ -711,32 +710,48 @@ public final class Minecraft26_3Protocol {
 
         output.writeShort(nonAir);
         output.writeShort(fluids);
-        if (palette.size() == 1) {
-            output.writeByte(0);
-            writeVarInt(output, gameRegistries.blockStateId(palette.keySet().iterator().next()));
-        } else {
-            var bits = paletteBits(palette.size());
-            output.writeByte(bits);
-            writeVarInt(output, palette.size());
-            for (var state : palette.keySet()) {
-                writeVarInt(output, gameRegistries.blockStateId(state));
-            }
-            for (var value : pack(values, bits)) {
-                output.writeLong(value);
-            }
-        }
+        writeBlockStates(output, palette, values, gameRegistries);
 
         output.writeByte(0);
         writeVarInt(output, 41);
     }
 
-    private static int paletteBits(int paletteSize) {
-        var bits = Math.max(MIN_PALETTE_BITS, Integer.SIZE - Integer.numberOfLeadingZeros(paletteSize - 1));
-        if (bits > MAX_PALETTE_BITS) {
-            throw new IllegalStateException("Section has " + paletteSize
-                    + " block states; direct palettes are not implemented");
+    private static void writeBlockStates(ByteBuf output, Map<BlockState, Integer> palette, int[] values,
+                                         MinecraftRegistries gameRegistries) {
+        switch (PaletteMode.select(palette.size())) {
+            case SINGLE -> {
+                output.writeByte(0);
+                writeVarInt(output, gameRegistries.blockStateId(palette.keySet().iterator().next()));
+            }
+            case INDIRECT -> {
+                var bits = PaletteMode.indirectBits(palette.size());
+                output.writeByte(bits);
+                writeVarInt(output, palette.size());
+                for (var state : palette.keySet()) {
+                    writeVarInt(output, gameRegistries.blockStateId(state));
+                }
+                writePackedLongs(output, pack(values, bits));
+            }
+            case DIRECT -> {
+                var bits = PaletteMode.directBits(gameRegistries.maxBlockStateId());
+                var globalIds = new int[palette.size()];
+                for (var entry : palette.entrySet()) {
+                    globalIds[entry.getValue()] = gameRegistries.blockStateId(entry.getKey());
+                }
+                var globalValues = new int[values.length];
+                for (var index = 0; index < values.length; index++) {
+                    globalValues[index] = globalIds[values[index]];
+                }
+                output.writeByte(bits);
+                writePackedLongs(output, pack(globalValues, bits));
+            }
         }
-        return bits;
+    }
+
+    private static void writePackedLongs(ByteBuf output, long[] values) {
+        for (var value : values) {
+            output.writeLong(value);
+        }
     }
 
     private static long[] pack(int[] values, int bits) {

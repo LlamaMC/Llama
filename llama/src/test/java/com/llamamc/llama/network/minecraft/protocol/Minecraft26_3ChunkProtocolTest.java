@@ -1,5 +1,6 @@
 package com.llamamc.llama.network.minecraft.protocol;
 
+import com.llamamc.llama.registry.MinecraftRegistries;
 import com.llamamc.llama.world.FlatChunkGenerator;
 import com.llamamc.llama.world.NormalChunkGenerator;
 import com.llamamc.llamaapi.concurrent.LlamaFuture;
@@ -36,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class Minecraft26_3ChunkProtocolTest {
     private static final int FIVE_BIT_PACKED_LONGS = 342;
+    private static final int DIRECT_PACKED_LONGS = 1024;
     private static final List<String> SIMPLE_STATES = List.of(
             "minecraft:air", "minecraft:stone", "minecraft:granite", "minecraft:diorite", "minecraft:andesite",
             "minecraft:bedrock", "minecraft:dirt", "minecraft:cobblestone", "minecraft:gravel", "minecraft:sand",
@@ -137,6 +139,36 @@ class Minecraft26_3ChunkProtocolTest {
                 readVarInt(sections);
             }
             sections.skipBytes(FIVE_BIT_PACKED_LONGS * Long.BYTES);
+            assertEquals(0, sections.readUnsignedByte());
+            assertEquals(41, readVarInt(sections));
+            assertEquals(0, sections.readableBytes());
+        } finally {
+            output.release();
+        }
+    }
+
+    @Test
+    void threeHundredStatesUseDirectGlobalIdsWithoutAPalette() {
+        var gameRegistries = new MinecraftRegistries(MinecraftProtocolVersion.V26_3);
+        var states = gameRegistries.blockStates().stream().limit(300).toList();
+        var output = Unpooled.buffer();
+
+        try {
+            Minecraft26_3Protocol.createRegistry(gameRegistries).encode(DefaultProtocolState.PLAY,
+                    PacketFlow.CLIENTBOUND, output, new LevelChunkWithLightPacket(new SingleSectionChunk(states)));
+            assertEquals(0x2E, readVarInt(output));
+            var sections = sectionBytes(output);
+            sections.skipBytes(Short.BYTES * 2);
+            assertEquals(16, sections.readUnsignedByte());
+            var packed = new long[DIRECT_PACKED_LONGS];
+            for (var index = 0; index < packed.length; index++) {
+                packed[index] = sections.readLong();
+            }
+            for (var position = 0; position < 4096; position++) {
+                var value = (int) (packed[position / 4] >>> (position % 4 * 16) & 0xFFFF);
+                assertEquals(gameRegistries.blockStateId(states.get(position % states.size())), value,
+                        "Wrong global ID at block " + position);
+            }
             assertEquals(0, sections.readUnsignedByte());
             assertEquals(41, readVarInt(sections));
             assertEquals(0, sections.readableBytes());
