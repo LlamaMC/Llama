@@ -97,6 +97,7 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     private final IWorld world;
     // Null runs the protocol without players: the join packets are sent at once and nothing is registered.
     private final PlayerLifecycle lifecycle;
+    private final Executor chunkExecutor;
 
     private DefaultProtocolState state = DefaultProtocolState.HANDSHAKE;
     private ConnectionStep step = ConnectionStep.HANDSHAKE;
@@ -117,10 +118,22 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
 
     MinecraftConnectionHandler(ServerStatus status, PacketRegistry registry, IWorld world,
                                PlayerLifecycle lifecycle) {
+        this(status, registry, world, lifecycle, CHUNK_REQUEST_EXECUTOR);
+    }
+
+    // The chunk executor runs the chunk loads and their hop back to the event loop. A caller that runs the loads on the
+    // calling thread gets a fixed order, which the protocol tests rely on.
+    MinecraftConnectionHandler(ServerStatus status, PacketRegistry registry, IWorld world,
+                               PlayerLifecycle lifecycle, Executor chunkExecutor) {
+        if (chunkExecutor == null) {
+            throw new IllegalArgumentException("Chunk executor must not be null");
+        }
+
         this.status = status;
         this.registry = registry;
         this.world = world;
         this.lifecycle = lifecycle;
+        this.chunkExecutor = chunkExecutor;
     }
 
     @Override
@@ -388,7 +401,7 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
 
     private void requestChunkGroup(ChannelHandlerContext context, long revision, List<ChunkPosition> positions,
                                    List<ChunkPosition> nextGroup) {
-        CompletableFuture.supplyAsync(() -> loadChunks(positions), CHUNK_REQUEST_EXECUTOR)
+        CompletableFuture.supplyAsync(() -> loadChunks(positions), chunkExecutor)
                 .whenComplete((chunks, error) -> context.executor().execute(() -> {
                     if (!finishChunkRequest(context, revision, chunks, error) || nextGroup.isEmpty()) {
                         return;
@@ -400,7 +413,7 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     private List<IChunk> loadChunks(List<ChunkPosition> positions) {
         var requests = positions.stream()
                 .map(position -> CompletableFuture.supplyAsync(
-                        () -> world.chunkNow(position.x(), position.z()), CHUNK_REQUEST_EXECUTOR))
+                        () -> world.chunkNow(position.x(), position.z()), chunkExecutor))
                 .toList();
         CompletableFuture.allOf(requests.toArray(CompletableFuture[]::new)).join();
         return requests.stream().map(CompletableFuture::join).toList();
