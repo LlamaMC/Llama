@@ -14,6 +14,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -151,6 +152,67 @@ class TickSchedulerTest {
         ITaskHandle handle = scheduler.runLaterTicks(3, () -> {});
         scheduler.close();
         assertTrue(handle.isCancelled());
+    }
+
+    @Test
+    @Timeout(5)
+    void runRepeatingRunsEveryPeriodUntilCancelled() throws Exception {
+        AtomicInteger runs = new AtomicInteger();
+        CountDownLatch thirdRun = new CountDownLatch(1);
+        CountDownLatch markerRan = new CountDownLatch(1);
+        loop.start();
+        ITaskHandle handle = scheduler.runRepeating(1, () -> {
+            if (runs.incrementAndGet() == 3) {
+                thirdRun.countDown();
+            }
+        });
+        assertTrue(thirdRun.await(5, TimeUnit.SECONDS));
+        handle.cancel();
+        int runsAtCancel = runs.get();
+        // A plain loop.execute marker runs before the next tick's repeats, so it would not show a run that was missed.
+        scheduler.runLaterTicks(2, markerRan::countDown);
+        assertTrue(markerRan.await(5, TimeUnit.SECONDS));
+        assertEquals(runsAtCancel, runs.get());
+    }
+
+    @Test
+    @Timeout(5)
+    void runRepeatingRejectsAPeriodBelowOne() {
+        assertThrows(IllegalArgumentException.class, () -> scheduler.runRepeating(0, () -> {}));
+        assertThrows(IllegalArgumentException.class, () -> scheduler.runRepeating(-1, () -> {}));
+    }
+
+    @Test
+    @Timeout(5)
+    void runRepeatingStopsWhenTheSchedulerCloses() throws Exception {
+        CountDownLatch firstRun = new CountDownLatch(1);
+        loop.start();
+        ITaskHandle handle = scheduler.runRepeating(1, firstRun::countDown);
+        assertTrue(firstRun.await(5, TimeUnit.SECONDS));
+        // close() is documented to run after the loop has stopped. While the loop runs, the tick thread may still be
+        // re-queuing the task, so the handle could be live when close() returns.
+        assertTrue(loop.stop(Duration.ofSeconds(2)));
+        scheduler.close();
+        assertTrue(handle.isCancelled());
+    }
+
+    @Test
+    @Timeout(5)
+    void runRepeatingContinuesAfterATaskFailure() throws Exception {
+        AtomicInteger runs = new AtomicInteger();
+        CountDownLatch thirdRun = new CountDownLatch(1);
+        loop.start();
+        scheduler.runRepeating(1, () -> {
+            int run = runs.incrementAndGet();
+            if (run == 1) {
+                throw new IllegalStateException("first run fails");
+            }
+            if (run == 3) {
+                thirdRun.countDown();
+            }
+        });
+        assertTrue(thirdRun.await(5, TimeUnit.SECONDS));
+        assertTrue(runs.get() >= 3);
     }
 
     @Test

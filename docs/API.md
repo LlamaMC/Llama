@@ -96,6 +96,7 @@ LlamaFuture<Integer> answer = scheduler.supplyAsync(() -> 6 * 7);
 - **Nothing runs inline.** `runOnTick` and `callOnTick` queue the task on the tick loop. It runs at the start of a later tick, even when the caller is the tick thread.
 - **Timing.** The tick loop runs one tick every 50 ms while it keeps up. `runLaterTicks` counts ticks, not milliseconds, so 40 ticks is about two seconds only while the server keeps pace.
 - **`runLaterTicks`** runs the task after `ticks` more ticks have completed. Zero or negative values behave like `runOnTick`. The returned `ITaskHandle` can cancel the task from any thread, and a second `cancel()` does nothing. The task has no result, so an exception from it is logged, not returned.
+- **`runRepeating`** runs the task every `periodTicks` ticks until the returned handle is cancelled. A period below 1 throws IllegalArgumentException. A failing run is logged and the repetition continues. Closing the scheduler cancels it.
 - **Errors go into the future** for `runOnTick`, `callOnTick` and `supplyAsync`. `join()` throws `LlamaPromise.LlamaAsyncException`, with the cause attached, for a failed future. It throws `LlamaPromise.LlamaCancelledException` for a cancelled one. `await()` throws the same exceptions and also `InterruptedException`.
 - **Do not `join()` from the tick thread.** The task behind a future from `runOnTick` or `callOnTick` can only run on the tick thread. Joining that future there blocks the thread the task needs, so the wait never ends. Nothing enforces this rule (section 9). Use `whenComplete` instead.
 - **`supplyAsync`** runs its supplier on a virtual thread. Use it for blocking work, then hand the result back with `runOnTick`.
@@ -308,7 +309,6 @@ llama.commands().register(new GreetCommand());
 - **World writes.** `IWorld` and `IChunk` have no `setBlock` or other write method.
 - **Chunk eviction.** Loaded chunks stay in memory. Nothing unloads them.
 - **Direct palettes.** A section with more block states than the indirect palette allows fails to encode, with the message "direct palettes are not implemented".
-- **Repeating tasks.** `IScheduler` has only one-shot methods. A task that must repeat can reschedule itself with `runLaterTicks`.
 - **Draining queued tasks at scheduler close.** Queued tasks are failed or cancelled when the scheduler closes. They are not run.
 - **Enforcing the join rule.** `LlamaFuture.join()` has no tick-thread check.
 
@@ -318,5 +318,5 @@ llama.commands().register(new GreetCommand());
 - **Event cancellation is advisory.** `post` never skips handlers, so a handler must check `canceled()` itself (section 4).
 - **Shutdown timeouts.** `ILlama.shutdown()` only requests a stop. The runtime gives the tick thread 10 seconds to stop, or 1 second if the current tick has been running for more than 5 seconds. If the tick thread does not stop in time, shutdown continues and logs an error. If the whole shutdown has not finished 60 seconds after the request, the runtime halts the JVM, and any work still running is cut off.
 - **Chunk request racing close.** `chunk()` checks whether the world is closed before it starts a load. A request that passes that check just as `close()` runs can, in a narrow window, start a load on a worker pool that is still open.
-- **Hung ticks.** If a tick runs past the watchdog's takeover threshold, the watchdog abandons that tick thread and continues on a fresh one, provided the server can still recover. Otherwise it asks for a restart. An abandoned thread keeps running until it returns, and then it is stopped the next time it enters server code. A plugin handler that blocks the tick can therefore trigger either outcome.
+- **Hung ticks.** If a tick runs past the watchdog's takeover threshold, the watchdog abandons that tick thread and continues on a fresh one, provided the server can still recover. Otherwise it asks for a restart. An abandoned thread keeps running until it returns, and then it is stopped the next time it enters server code. A plugin handler that blocks the tick can therefore trigger either outcome. A repeating task whose run is abandoned in this way stops repeating.
 - **Tick guard on `chunkNow`.** The tick-thread check depends on the predicate the world is built with. `LlamaWorld` and `WorldManager` have public constructors that pass `() -> false`, so worlds built that way have no tick-thread check. The runtime passes the real predicate.

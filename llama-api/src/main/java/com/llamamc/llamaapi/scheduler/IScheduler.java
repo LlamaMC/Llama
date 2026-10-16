@@ -19,6 +19,13 @@ public interface IScheduler {
     // Ticks of zero or less behave like runOnTick.
     ITaskHandle runLaterTicks(int ticks, Runnable task);
 
+    /**
+     * Runs the task every {@code periodTicks} ticks, starting {@code periodTicks} ticks from now. Cancel the handle to
+     * stop it. A period below 1 throws {@link IllegalArgumentException}. An exception from the task is logged, and the
+     * next run is still scheduled.
+     */
+    ITaskHandle runRepeating(int periodTicks, Runnable task);
+
     // Runs on a virtual thread, so it never blocks or runs on the tick thread.
     <T> LlamaFuture<T> supplyAsync(Supplier<T> task);
 

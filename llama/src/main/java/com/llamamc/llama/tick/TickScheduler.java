@@ -73,23 +73,19 @@ public final class TickScheduler implements IScheduler {
             throw new NullPointerException("task");
         }
         long dueTick = loop.tickCount() + Math.max(0, ticks);
-        var entry = new DelayedTask(dueTick, nextSequence.getAndIncrement(), task);
-        if (closed.get()) {
-            entry.cancel();
-            return entry;
+        return enqueue(new DelayedTask(dueTick, nextSequence.getAndIncrement(), task));
+    }
+
+    @Override
+    public ITaskHandle runRepeating(int periodTicks, Runnable task) {
+        if (task == null) {
+            throw new NullPointerException("task");
         }
-        // Registered before queueing, then checked again: either close() sees this entry, or this check sees closed.
-        scheduled.add(entry);
-        if (!loop.execute(() -> enqueueDelayed(entry))) {
-            scheduled.remove(entry);
-            entry.cancel();
-            return entry;
+        if (periodTicks < 1) {
+            throw new IllegalArgumentException("periodTicks must be at least 1");
         }
-        if (closed.get()) {
-            scheduled.remove(entry);
-            entry.cancel();
-        }
-        return entry;
+        long dueTick = loop.tickCount() + periodTicks;
+        return enqueue(new DelayedTask(dueTick, nextSequence.getAndIncrement(), periodTicks, task));
     }
 
     @Override
@@ -143,6 +139,25 @@ public final class TickScheduler implements IScheduler {
         settle(call.promise(), task);
     }
 
+    private ITaskHandle enqueue(DelayedTask entry) {
+        if (closed.get()) {
+            entry.cancel();
+            return entry;
+        }
+        // Registered before queueing, then checked again: either close() sees this entry, or this check sees closed.
+        scheduled.add(entry);
+        if (!loop.execute(() -> enqueueDelayed(entry))) {
+            scheduled.remove(entry);
+            entry.cancel();
+            return entry;
+        }
+        if (closed.get()) {
+            scheduled.remove(entry);
+            entry.cancel();
+        }
+        return entry;
+    }
+
     private void enqueueDelayed(DelayedTask entry) {
         if (closed.get()) {
             scheduled.remove(entry);
@@ -178,6 +193,29 @@ public final class TickScheduler implements IScheduler {
             // An abandoned thread must not log or continue after its task fails.
             loop.fence();
             LOGGER.error("Scheduled task failed", t);
+        }
+        if (entry.repeating()) {
+            reschedule(entry);
+        }
+    }
+
+    // Reached only after a run that completed or failed with a logged error. An unwound run never gets here.
+    private void reschedule(DelayedTask entry) {
+        if (entry.isCancelled()) {
+            return;
+        }
+        // runDueTasks took the entry out of scheduled before running it, so close() cannot cancel it from there.
+        if (closed.get()) {
+            entry.cancel();
+            return;
+        }
+        entry.rescheduleFrom(loop.tickCount());
+        scheduled.add(entry);
+        delayed.add(entry);
+        // close() may have run between the check above and the add, so it is checked again.
+        if (closed.get()) {
+            scheduled.remove(entry);
+            entry.cancel();
         }
     }
 
@@ -224,14 +262,20 @@ public final class TickScheduler implements IScheduler {
 
     // Identity equality on purpose: a user Runnable with a changing hashCode must not lose its entry from the sets.
     private static final class DelayedTask implements ITaskHandle {
-        private final long dueTick;
+        private long dueTick;
         private final long sequence;
+        private final long period;
         private final Runnable task;
         private final AtomicBoolean cancelled = new AtomicBoolean();
 
         DelayedTask(long dueTick, long sequence, Runnable task) {
+            this(dueTick, sequence, 0, task);
+        }
+
+        DelayedTask(long dueTick, long sequence, long period, Runnable task) {
             this.dueTick = dueTick;
             this.sequence = sequence;
+            this.period = period;
             this.task = task;
         }
 
@@ -241,6 +285,15 @@ public final class TickScheduler implements IScheduler {
 
         long sequence() {
             return sequence;
+        }
+
+        boolean repeating() {
+            return period > 0;
+        }
+
+        // Only called while the entry is out of the delayed queue, because the queue is ordered by dueTick.
+        void rescheduleFrom(long tick) {
+            dueTick = tick + period;
         }
 
         Runnable task() {
