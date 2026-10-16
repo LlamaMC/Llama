@@ -34,6 +34,7 @@ import com.llamamc.llamaapi.network.minecraft.packet.play.ChatPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchReceivedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchFinishedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchStartPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.CommandsPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ForgetLevelChunkPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.GameEvent;
 import com.llamamc.llamaapi.network.minecraft.packet.play.GameEventPacket;
@@ -91,6 +92,13 @@ public final class Minecraft26_3Protocol {
     private static final int MAX_ARGUMENT_SIGNATURES = 8;
     private static final int MAX_ARGUMENT_NAME_CHARACTERS = 16;
     private static final int LAST_SEEN_WINDOW_SIZE = 20;
+    // Command node flags. The low bits hold the node type. Only the root and the executable literal are ever sent, so
+    // the redirect, suggestion and restricted flags are neither written nor accepted.
+    private static final int COMMAND_ROOT_INDEX = 0;
+    private static final int COMMAND_ROOT_FLAGS = 0;
+    private static final int COMMAND_TYPE_LITERAL = 1;
+    private static final int COMMAND_FLAG_EXECUTABLE = 4;
+    private static final int COMMAND_LITERAL_FLAGS = COMMAND_TYPE_LITERAL | COMMAND_FLAG_EXECUTABLE;
     private static final int NBT_TAG_STRING = 8;
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
@@ -221,6 +229,8 @@ public final class Minecraft26_3Protocol {
                         input -> new ChunkBatchFinishedPacket(readVarInt(input))));
         registry.register(DefaultProtocolState.PLAY, PacketFlow.CLIENTBOUND, 0x0C, ChunkBatchStartPacket.class,
                 StreamCodec.of((output, packet) -> { }, input -> new ChunkBatchStartPacket()));
+        registry.register(DefaultProtocolState.PLAY, PacketFlow.CLIENTBOUND, 0x10, CommandsPacket.class,
+                StreamCodec.of(Minecraft26_3Protocol::writeCommands, Minecraft26_3Protocol::readCommands));
         registry.register(DefaultProtocolState.PLAY, PacketFlow.SERVERBOUND, 0x1C, KeepAlivePacket.class,
                 StreamCodec.of((output, packet) -> output.writeLong(packet.id()),
                         input -> new KeepAlivePacket(input.readLong())));
@@ -493,6 +503,96 @@ public final class Minecraft26_3Protocol {
                 }
             }
         });
+    }
+
+    private static CommandsPacket readCommands(ByteBuf input) {
+        var count = readCount(input, Integer.MAX_VALUE, "command nodes");
+        var nodes = new ArrayList<WireCommandNode>(Math.min(count, 65_536));
+
+        for (var index = 0; index < count; index++) {
+            nodes.add(readCommandNode(input));
+        }
+        var rootIndex = readVarInt(input);
+        requireFullyRead(input, "commands");
+
+        return new CommandsPacket(commandNames(nodes, rootIndex));
+    }
+
+    private static WireCommandNode readCommandNode(ByteBuf input) {
+        if (!input.isReadable()) {
+            throw new DecoderException("Incomplete command node");
+        }
+        var flags = input.readUnsignedByte();
+        var childCount = readCount(input, Integer.MAX_VALUE, "command children");
+        var children = new ArrayList<Integer>(Math.min(childCount, 65_536));
+
+        for (var index = 0; index < childCount; index++) {
+            children.add(readVarInt(input));
+        }
+        if (flags == COMMAND_ROOT_FLAGS) {
+            return new WireCommandNode(children, null);
+        }
+        if (flags != COMMAND_LITERAL_FLAGS || !children.isEmpty()) {
+            throw new DecoderException("Unsupported command node flags: " + flags);
+        }
+        return new WireCommandNode(children, readString(input));
+    }
+
+    // Node 0 must be the root, and every other node must be a literal child of it. Anything else is rejected.
+    private static List<String> commandNames(List<WireCommandNode> nodes, int rootIndex) {
+        if (nodes.isEmpty() || rootIndex != COMMAND_ROOT_INDEX || nodes.getFirst().literal() != null) {
+            throw new DecoderException("Unsupported command root at index " + rootIndex);
+        }
+        var children = nodes.getFirst().children();
+        var reached = new HashSet<Integer>();
+        var distinct = new HashSet<String>();
+        var names = new ArrayList<String>(children.size());
+
+        for (var child : children) {
+            if (child < 1 || child >= nodes.size() || !reached.add(child)) {
+                throw new DecoderException("Invalid command child index: " + child);
+            }
+            var name = nodes.get(child).literal();
+            if (name == null || name.isBlank() || !distinct.add(name)) {
+                throw new DecoderException("Invalid command name at index " + child);
+            }
+            names.add(name);
+        }
+        if (names.size() != nodes.size() - 1) {
+            throw new DecoderException("Command node is not a child of the root");
+        }
+        return names;
+    }
+
+    private static void writeCommands(ByteBuf output, CommandsPacket packet) {
+        var names = packet.commandNames();
+
+        writeVarInt(output, names.size() + 1);
+        writeCommandRoot(output, names.size());
+        for (var name : names) {
+            writeCommandLiteral(output, name);
+        }
+        writeVarInt(output, COMMAND_ROOT_INDEX);
+    }
+
+    // The root is node 0. Its children are the literals that follow it, numbered 1 to the name count.
+    private static void writeCommandRoot(ByteBuf output, int literalCount) {
+        output.writeByte(COMMAND_ROOT_FLAGS);
+        writeVarInt(output, literalCount);
+
+        for (var index = 1; index <= literalCount; index++) {
+            writeVarInt(output, index);
+        }
+    }
+
+    // A literal is executable, has no children of its own, and carries its name as a string.
+    private static void writeCommandLiteral(ByteBuf output, String name) {
+        output.writeByte(COMMAND_LITERAL_FLAGS);
+        writeVarInt(output, 0);
+        writeString(output, name);
+    }
+
+    private record WireCommandNode(List<Integer> children, String literal) {
     }
 
     private static AcceptTeleportationPacket readAcceptTeleportation(ByteBuf input) {
