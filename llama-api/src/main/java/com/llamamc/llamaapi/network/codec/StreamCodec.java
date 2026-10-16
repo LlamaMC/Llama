@@ -8,8 +8,12 @@ public interface StreamCodec<B, V> extends StreamEncoder<B, V>, StreamDecoder<B,
 
 
     static <B, V> StreamCodec<B, V> of(StreamEncoder<B, V> encoder, StreamDecoder<B, V> decoder) {
-        Objects.requireNonNull(encoder, "encoder");
-        Objects.requireNonNull(decoder, "decoder");
+        if (encoder == null) {
+            throw new NullPointerException("encoder");
+        }
+        if (decoder == null) {
+            throw new NullPointerException("decoder");
+        }
         return new StreamCodec<>() {
             @Override
             public V decode(B input) {
@@ -44,9 +48,15 @@ public interface StreamCodec<B, V> extends StreamEncoder<B, V>, StreamDecoder<B,
             Function<C, T1> g1,
             Function<T1, C> ctor
     ) {
-        Objects.requireNonNull(c1);
-        Objects.requireNonNull(g1);
-        Objects.requireNonNull(ctor);
+        if (c1 == null) {
+            throw new NullPointerException("c1");
+        }
+        if (g1 == null) {
+            throw new NullPointerException("g1");
+        }
+        if (ctor == null) {
+            throw new NullPointerException("ctor");
+        }
         return new StreamCodec<>() {
             @Override
             public C decode(B input) {
@@ -67,11 +77,21 @@ public interface StreamCodec<B, V> extends StreamEncoder<B, V>, StreamDecoder<B,
             Function<C, T2> g2,
             BiFunction<T1, T2, C> ctor
     ) {
-        Objects.requireNonNull(c1);
-        Objects.requireNonNull(g1);
-        Objects.requireNonNull(c2);
-        Objects.requireNonNull(g2);
-        Objects.requireNonNull(ctor);
+        if (c1 == null) {
+            throw new NullPointerException("c1");
+        }
+        if (g1 == null) {
+            throw new NullPointerException("g1");
+        }
+        if (c2 == null) {
+            throw new NullPointerException("c2");
+        }
+        if (g2 == null) {
+            throw new NullPointerException("g2");
+        }
+        if (ctor == null) {
+            throw new NullPointerException("ctor");
+        }
         return new StreamCodec<>() {
             @Override
             public C decode(B input) {
@@ -92,13 +112,27 @@ public interface StreamCodec<B, V> extends StreamEncoder<B, V>, StreamDecoder<B,
             StreamCodec<? super B, T3> c3, Function<C, T3> g3,
             Function3<T1, T2, T3, C> ctor
     ) {
-        Objects.requireNonNull(c1);
-        Objects.requireNonNull(g1);
-        Objects.requireNonNull(c2);
-        Objects.requireNonNull(g2);
-        Objects.requireNonNull(c3);
-        Objects.requireNonNull(g3);
-        Objects.requireNonNull(ctor);
+        if (c1 == null) {
+            throw new NullPointerException("c1");
+        }
+        if (g1 == null) {
+            throw new NullPointerException("g1");
+        }
+        if (c2 == null) {
+            throw new NullPointerException("c2");
+        }
+        if (g2 == null) {
+            throw new NullPointerException("g2");
+        }
+        if (c3 == null) {
+            throw new NullPointerException("c3");
+        }
+        if (g3 == null) {
+            throw new NullPointerException("g3");
+        }
+        if (ctor == null) {
+            throw new NullPointerException("ctor");
+        }
         return new StreamCodec<>() {
             @Override
             public C decode(B input) {
@@ -115,8 +149,12 @@ public interface StreamCodec<B, V> extends StreamEncoder<B, V>, StreamDecoder<B,
     }
 
     default <O> StreamCodec<B, O> map(Function<? super V, ? extends O> to, Function<? super O, ? extends V> from) {
-        Objects.requireNonNull(to, "to");
-        Objects.requireNonNull(from, "from");
+        if (to == null) {
+            throw new NullPointerException("to");
+        }
+        if (from == null) {
+            throw new NullPointerException("from");
+        }
         return new StreamCodec<B, O>() {
             @Override
             public O decode(B input) {
@@ -131,7 +169,9 @@ public interface StreamCodec<B, V> extends StreamEncoder<B, V>, StreamDecoder<B,
     }
 
     default <O> StreamCodec<O, V> mapStream(Function<? super O, ? extends B> wrapper) {
-        Objects.requireNonNull(wrapper, "wrapper");
+        if (wrapper == null) {
+            throw new NullPointerException("wrapper");
+        }
         return new StreamCodec<O, V>() {
             @Override
             public V decode(O input) {
@@ -146,8 +186,12 @@ public interface StreamCodec<B, V> extends StreamEncoder<B, V>, StreamDecoder<B,
     }
 
     default <O> StreamCodec<B, O> dispatch(Function<? super O, ? extends V> typeGetter, Function<? super V, ? extends StreamCodec<? super B, ? extends O>> codecByType) {
-        Objects.requireNonNull(typeGetter, "typeGetter");
-        Objects.requireNonNull(codecByType, "codecByType");
+        if (typeGetter == null) {
+            throw new NullPointerException("typeGetter");
+        }
+        if (codecByType == null) {
+            throw new NullPointerException("codecByType");
+        }
         return new StreamCodec<>() {
             @Override
             public O decode(B input) {
