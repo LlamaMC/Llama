@@ -1,8 +1,16 @@
 package com.llamamc.llama.network.minecraft.protocol;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 import com.llamamc.llama.registry.MinecraftRegistries;
 
+import com.llamamc.llamaapi.component.Component;
 import com.llamamc.llamaapi.network.codec.StreamCodec;
+import com.llamamc.llamaapi.network.minecraft.packet.common.DisconnectPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.common.KeepAlivePacket;
 import com.llamamc.llamaapi.network.minecraft.packet.configuration.ClientInformationPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.configuration.ConfigurationAcknowledgedPacket;
@@ -16,6 +24,7 @@ import com.llamamc.llamaapi.network.minecraft.packet.configuration.UpdateEnabled
 import com.llamamc.llamaapi.network.minecraft.packet.configuration.UpdateTagsPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.handshake.HandshakePacket;
 import com.llamamc.llamaapi.network.minecraft.packet.login.LoginAcknowledgedPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.login.LoginDisconnectPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.login.LoginFinishedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.login.LoginStartPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.AcceptTeleportationPacket;
@@ -34,6 +43,7 @@ import com.llamamc.llamaapi.network.minecraft.packet.play.PlayLoginPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.PlayerLoadedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.PlayerPositionPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.SetChunkCacheCenterPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.SystemChatPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.status.PingRequestPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.status.PongResponsePacket;
 import com.llamamc.llamaapi.network.minecraft.packet.status.StatusRequestPacket;
@@ -45,10 +55,13 @@ import com.llamamc.llamaapi.world.BlockState;
 import com.llamamc.llamaapi.world.ChunkPosition;
 import com.llamamc.llamaapi.world.IChunk;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufInputStream;
+import io.netty.buffer.ByteBufOutputStream;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.EncoderException;
 import io.netty.util.CharsetUtil;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -65,6 +78,9 @@ public final class Minecraft26_3Protocol {
     private static final int MAX_KNOWN_PACKS = 64;
     private static final int MAX_PROFILE_PROPERTIES = 16;
     private static final int MAX_USERNAME_CHARACTERS = 16;
+    private static final int MAX_LOGIN_DISCONNECT_CHARACTERS = 262_144;
+    private static final int NBT_TAG_STRING = 8;
+    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
     private Minecraft26_3Protocol() {
     }
@@ -108,6 +124,9 @@ public final class Minecraft26_3Protocol {
                 StreamCodec.of(Minecraft26_3Protocol::writeLoginStart, Minecraft26_3Protocol::readLoginStart));
         registry.register(DefaultProtocolState.LOGIN, PacketFlow.SERVERBOUND, 3, LoginAcknowledgedPacket.class,
                 StreamCodec.unit(new LoginAcknowledgedPacket()));
+        registry.register(DefaultProtocolState.LOGIN, PacketFlow.CLIENTBOUND, 0, LoginDisconnectPacket.class,
+                StreamCodec.of(Minecraft26_3Protocol::writeLoginDisconnect,
+                        Minecraft26_3Protocol::readLoginDisconnect));
         registry.register(DefaultProtocolState.LOGIN, PacketFlow.CLIENTBOUND, 2, LoginFinishedPacket.class,
                 StreamCodec.of(Minecraft26_3Protocol::writeLoginFinished,
                         Minecraft26_3Protocol::readLoginFinished));
@@ -129,6 +148,8 @@ public final class Minecraft26_3Protocol {
                 StreamCodec.of((output, packet) -> writeKnownPacks(output, packet.packs()),
                         input -> new KnownPacksSelectedPacket(readKnownPacks(input))));
 
+        registry.register(DefaultProtocolState.CONFIGURATION, PacketFlow.CLIENTBOUND, 2, DisconnectPacket.class,
+                StreamCodec.of(Minecraft26_3Protocol::writeDisconnect, Minecraft26_3Protocol::readDisconnect));
         registry.register(DefaultProtocolState.CONFIGURATION, PacketFlow.CLIENTBOUND, 3,
                 FinishConfigurationPacket.class, StreamCodec.unit(new FinishConfigurationPacket()));
         registry.register(DefaultProtocolState.CONFIGURATION, PacketFlow.CLIENTBOUND, 7,
@@ -209,6 +230,10 @@ public final class Minecraft26_3Protocol {
                     writeVarInt(output, packet.chunkX());
                     writeVarInt(output, packet.chunkZ());
                 }, input -> new SetChunkCacheCenterPacket(readVarInt(input), readVarInt(input))));
+        registry.register(DefaultProtocolState.PLAY, PacketFlow.CLIENTBOUND, 0x20, DisconnectPacket.class,
+                StreamCodec.of(Minecraft26_3Protocol::writeDisconnect, Minecraft26_3Protocol::readDisconnect));
+        registry.register(DefaultProtocolState.PLAY, PacketFlow.CLIENTBOUND, 0x7C, SystemChatPacket.class,
+                StreamCodec.of(Minecraft26_3Protocol::writeSystemChat, Minecraft26_3Protocol::readSystemChat));
     }
 
     private static HandshakePacket readHandshake(ByteBuf input) {
@@ -799,6 +824,93 @@ public final class Minecraft26_3Protocol {
         for (var value : values) {
             output.writeLong(value);
         }
+    }
+
+    private static LoginDisconnectPacket readLoginDisconnect(ByteBuf input) {
+        var reason = readJsonTextComponent(input);
+        requireFullyRead(input, "login disconnect");
+        return new LoginDisconnectPacket(reason);
+    }
+
+    private static void writeLoginDisconnect(ByteBuf output, LoginDisconnectPacket packet) {
+        writeJsonTextComponent(output, packet.reason());
+    }
+
+    private static DisconnectPacket readDisconnect(ByteBuf input) {
+        var reason = readNbtTextComponent(input);
+        requireFullyRead(input, "disconnect");
+        return new DisconnectPacket(reason);
+    }
+
+    private static void writeDisconnect(ByteBuf output, DisconnectPacket packet) {
+        writeNbtTextComponent(output, packet.reason());
+    }
+
+    private static SystemChatPacket readSystemChat(ByteBuf input) {
+        var content = readNbtTextComponent(input);
+        var overlay = input.readBoolean();
+        requireFullyRead(input, "system chat");
+        return new SystemChatPacket(content, overlay);
+    }
+
+    private static void writeSystemChat(ByteBuf output, SystemChatPacket packet) {
+        writeNbtTextComponent(output, packet.content());
+        output.writeBoolean(packet.overlay());
+    }
+
+    // Play and configuration text components use network NBT. A plain text component is one NBT string tag.
+    private static Component readNbtTextComponent(ByteBuf input) {
+        var tagType = input.readByte();
+
+        if (tagType != NBT_TAG_STRING) {
+            throw new DecoderException("Unsupported text component tag type: " + tagType);
+        }
+
+        try {
+            return new Component(new ByteBufInputStream(input).readUTF());
+        } catch (IOException exception) {
+            throw new DecoderException("Invalid text component string", exception);
+        }
+    }
+
+    private static void writeNbtTextComponent(ByteBuf output, Component component) {
+        if (component == null) {
+            throw new IllegalArgumentException("text component cannot be null");
+        }
+
+        output.writeByte(NBT_TAG_STRING);
+
+        try {
+            new ByteBufOutputStream(output).writeUTF(component.text());
+        } catch (IOException exception) {
+            throw new EncoderException("Text component cannot be encoded as an NBT string", exception);
+        }
+    }
+
+    // The login state carries text components as a JSON string inside a Minecraft string.
+    private static Component readJsonTextComponent(ByteBuf input) {
+        var json = readString(input, MAX_LOGIN_DISCONNECT_CHARACTERS);
+        JsonElement element;
+
+        try {
+            element = JsonParser.parseString(json);
+        } catch (JsonParseException exception) {
+            throw new DecoderException("Invalid text component JSON", exception);
+        }
+
+        if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isString()) {
+            throw new DecoderException("Unsupported text component JSON, only plain text is supported");
+        }
+
+        return new Component(element.getAsString());
+    }
+
+    private static void writeJsonTextComponent(ByteBuf output, Component component) {
+        if (component == null) {
+            throw new IllegalArgumentException("text component cannot be null");
+        }
+
+        writeString(output, GSON.toJson(new JsonPrimitive(component.text())), MAX_LOGIN_DISCONNECT_CHARACTERS);
     }
 
     private static UUID readUuid(ByteBuf input) {
