@@ -11,10 +11,12 @@ import com.llamamc.llamaapi.world.WorldType;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 
 public final class WorldManager implements IWorldManager, AutoCloseable {
     private final Map<String, LlamaWorld> worlds;
@@ -22,6 +24,10 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
     private final ChunkScheduler scheduler;
 
     public WorldManager(WorldsConfig config, Path rootDirectory) {
+        this(config, rootDirectory, () -> false);
+    }
+
+    public WorldManager(WorldsConfig config, Path rootDirectory, BooleanSupplier onTickThread) {
         var configuredWorlds = config.getWorlds();
         if (configuredWorlds == null || configuredWorlds.isEmpty()) {
             throw new IllegalArgumentException("At least one world must be configured");
@@ -29,8 +35,9 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
 
         scheduler = new ChunkScheduler("Shared");
         var loaded = new LinkedHashMap<String, LlamaWorld>();
-        configuredWorlds.forEach((name, world) -> loaded.put(name, create(name, world, rootDirectory, scheduler)));
-        worlds = Map.copyOf(loaded);
+        configuredWorlds.forEach((name, world) ->
+                loaded.put(name, create(name, world, rootDirectory, scheduler, onTickThread)));
+        worlds = Collections.unmodifiableMap(loaded);
         mainWorld = loaded.getOrDefault("main", loaded.values().iterator().next());
     }
 
@@ -70,12 +77,12 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
     }
 
     private static LlamaWorld create(String name, WorldsConfig.ConfigWorld config, Path rootDirectory,
-                                     ChunkScheduler scheduler) {
+                                     ChunkScheduler scheduler, BooleanSupplier onTickThread) {
         var directory = rootDirectory.resolve(name);
         var seed = config.getSeed() == null ? "0" : config.getSeed();
         var generator = generator(config.getType(), config.getDimension(), parseSeed(seed));
         return new LlamaWorld(name, seed, directory, config.getDimension(), config.getType(), generator,
-                new VicunaChunkStorage(directory), scheduler, () -> false);
+                new VicunaChunkStorage(directory), scheduler, onTickThread);
     }
 
     private static IChunkGenerator generator(WorldType type, DimensionType dimension, long seed) {

@@ -49,9 +49,7 @@ public final class GeneratedChunk implements IChunk {
     @Override
     public BlockState block(int localX, int blockY, int localZ) {
         checkHorizontal(localX, localZ);
-        if (blockY < minY || blockY >= minY + height) {
-            return BlockState.AIR;
-        }
+        checkVertical(blockY);
 
         return palette.get(Byte.toUnsignedInt(blocks[index(localX, blockY, localZ)]));
     }
@@ -86,5 +84,13 @@ public final class GeneratedChunk implements IChunk {
         }
 
         throw new IndexOutOfBoundsException("Chunk coordinates must be between 0 and 15");
+    }
+
+    private void checkVertical(int blockY) {
+        if (blockY >= minY && blockY < minY + height) {
+            return;
+        }
+
+        throw new IndexOutOfBoundsException("Chunk block Y must be between " + minY + " and " + (minY + height - 1));
     }
 }
