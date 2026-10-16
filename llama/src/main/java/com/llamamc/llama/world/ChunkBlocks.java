@@ -21,7 +21,8 @@ final class ChunkBlocks {
     private final int minY;
     private final int height;
     // A slot is a palette entry. slotUses counts the blocks that hold it. A slot that no block holds joins
-    // freeSlots and keeps its old state until it is reused, so the palette grows only when every entry is in use.
+    // freeSlots and keeps its old state until it is reused or compacted, so the palette grows only when every entry
+    // is in use.
     private final List<BlockState> palette = new ArrayList<>();
     private final HashMap<BlockState, Integer> paletteIndexes = new HashMap<>();
     private final ArrayDeque<Integer> freeSlots = new ArrayDeque<>();
@@ -31,6 +32,8 @@ final class ChunkBlocks {
     private boolean dirty;
     private IChunk snapshot;
     private long snapshotRevision = -1;
+    // Counts the whole-palette scans. Only compaction makes one, so a refused write must leave the count alone.
+    private int paletteScans;
 
     private ChunkBlocks(ChunkPosition position, int minY, int height) {
         this.position = position;
@@ -56,6 +59,7 @@ final class ChunkBlocks {
     void set(int localX, int blockY, int localZ, BlockState state) {
         checkHorizontal(localX, localZ);
         checkVertical(blockY);
+        compactIfSparse();
         var index = index(localX, blockY, localZ);
         var replaced = Short.toUnsignedInt(indexes[index]);
         // The store releases the replaced block's slot before the cap is checked. A write that replaces the only block
@@ -73,6 +77,15 @@ final class ChunkBlocks {
 
     long revision() {
         return revision;
+    }
+
+    // Package-private for the tests, which check that refusals never scan and that compaction drops freed states.
+    int paletteScans() {
+        return paletteScans;
+    }
+
+    int paletteSize() {
+        return palette.size();
     }
 
     boolean dirty() {
@@ -141,6 +154,47 @@ final class ChunkBlocks {
             paletteIndexes.remove(palette.get(slot));
             freeSlots.push(slot);
         }
+    }
+
+    // Freed slots keep their old states until a write reuses them, and every snapshot copies those states. Once they
+    // outnumber the live slots, the next store compacts the palette, so stale states stay bounded by the live ones.
+    private void compactIfSparse() {
+        if (freeSlots.size() * 2 <= palette.size()) {
+            return;
+        }
+
+        compact();
+    }
+
+    // Drops the freed slots, so the palette holds only states in use. Live slots keep their order and move down to the
+    // lowest numbers, and the block indexes are renumbered to match. No block changes, so the revision stays. The
+    // cached snapshot still holds the old palette, so it is dropped to let the freed states go.
+    private void compact() {
+        paletteScans++;
+        var previousSize = palette.size();
+        var remap = new int[previousSize];
+        var live = 0;
+        for (var slot = 0; slot < previousSize; slot++) {
+            if (slotUses[slot] == 0) {
+                continue;
+            }
+
+            var state = palette.get(slot);
+            remap[slot] = live;
+            palette.set(live, state);
+            slotUses[live] = slotUses[slot];
+            paletteIndexes.put(state, live);
+            live++;
+        }
+        palette.subList(live, previousSize).clear();
+        Arrays.fill(slotUses, live, previousSize, 0);
+        // Every slot that is left is live, so no slot is free.
+        freeSlots.clear();
+        for (var index = 0; index < indexes.length; index++) {
+            indexes[index] = (short) remap[Short.toUnsignedInt(indexes[index])];
+        }
+        snapshot = null;
+        snapshotRevision = -1;
     }
 
     private static IllegalStateException tooManyStates() {
