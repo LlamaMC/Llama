@@ -3,7 +3,6 @@ package com.llamamc.llamaapi.concurrent;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
@@ -124,8 +123,13 @@ public final class LlamaPromise<T> {
             if (action == null) {
                 throw new NullPointerException("action");
             }
+            var settled = outcome.get();
+            if (settled != null) {
+                notifyListener(action, settled);
+                return this;
+            }
             listeners.add(action);
-            // If the future is still pending, the completing thread drains this listener.
+            // Added before this second check, so a concurrent settle either drains the listener or is seen here.
             if (isDone()) {
                 drain();
             }
@@ -149,7 +153,7 @@ public final class LlamaPromise<T> {
 
             whenComplete((v, err) -> dispatch(executor, next, () -> {
                 if (err != null) {
-                    next.fail(err);
+                    propagateFailure(next, err);
                     return;
                 }
                 try {
@@ -179,14 +183,14 @@ public final class LlamaPromise<T> {
 
             whenComplete((v, err) -> dispatch(executor, next, () -> {
                 if (err != null) {
-                    next.fail(err);
+                    propagateFailure(next, err);
                     return;
                 }
                 try {
                     var inner = fn.apply(v);
                     inner.whenComplete((iv, ierr) -> {
                         if (ierr != null) {
-                            next.fail(ierr);
+                            propagateFailure(next, ierr);
                             return;
                         }
                         next.complete(iv);
@@ -199,13 +203,22 @@ public final class LlamaPromise<T> {
             return next.future();
         }
 
-        // A rejected task never runs, so the derived future must fail here or nothing would complete it.
+        // Any exception from execute means the task never runs, so the derived future must fail here.
         private static void dispatch(Executor executor, LlamaPromise<?> next, Runnable task) {
             try {
                 executor.execute(task);
-            } catch (RejectedExecutionException e) {
+            } catch (RuntimeException e) {
                 next.fail(e);
             }
+        }
+
+        // Cancellation is not a failure, so a dependent of a cancelled future must not report it as one.
+        private static void propagateFailure(LlamaPromise<?> next, Throwable err) {
+            if (err instanceof LlamaCancelledException) {
+                next.cancel();
+                return;
+            }
+            next.fail(err);
         }
 
         @Override

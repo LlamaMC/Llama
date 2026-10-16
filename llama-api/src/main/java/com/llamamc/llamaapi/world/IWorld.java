@@ -29,6 +29,8 @@ public interface IWorld {
 
     default Optional<BlockState> peekBlock(int x, int y, int z) {
         return loadedChunk(Math.floorDiv(x, IChunk.WIDTH), Math.floorDiv(z, IChunk.WIDTH))
+                // The contract is Optional, so an out-of-range Y is simply absent, not an exception.
+                .filter(chunk -> y >= chunk.minY() && y < chunk.minY() + chunk.height())
                 .map(chunk -> chunk.block(Math.floorMod(x, IChunk.WIDTH), y, Math.floorMod(z, IChunk.WIDTH)));
     }
 

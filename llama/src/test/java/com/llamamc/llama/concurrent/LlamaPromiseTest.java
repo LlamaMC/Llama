@@ -2,6 +2,7 @@ package com.llamamc.llama.concurrent;
 
 import com.llamamc.llamaapi.concurrent.LlamaPromise;
 import com.llamamc.llamaapi.concurrent.LlamaPromise.LlamaAsyncException;
+import com.llamamc.llamaapi.concurrent.LlamaPromise.LlamaCancelledException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -10,6 +11,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -132,6 +134,55 @@ class LlamaPromiseTest {
         assertTrue(derived.isDone());
         var failure = assertThrows(LlamaAsyncException.class, derived::join);
         assertInstanceOf(RejectedExecutionException.class, failure.getCause());
+    }
+
+    @Test
+    @Timeout(10)
+    void throwingExecutorFailsDerivedFuturesWhenSourceCompletesLater() {
+        var source = new LlamaPromise<String>();
+        Executor stopped = task -> {
+            throw new IllegalStateException("executor stopped");
+        };
+        var applied = source.future().thenApplyAsync(stopped, String::length);
+        var composed = source.future().thenComposeAsync(stopped, v -> new LlamaPromise<Integer>().future());
+
+        source.complete("abc");
+
+        assertTrue(applied.isDone());
+        assertTrue(composed.isDone());
+        var appliedFailure = assertThrows(LlamaAsyncException.class, applied::join);
+        var composedFailure = assertThrows(LlamaAsyncException.class, composed::join);
+        assertInstanceOf(IllegalStateException.class, appliedFailure.getCause());
+        assertInstanceOf(IllegalStateException.class, composedFailure.getCause());
+    }
+
+    @Test
+    @Timeout(10)
+    void cancelledSourceCancelsDerivedFuture() {
+        var source = new LlamaPromise<String>();
+        var derived = source.future().thenApply(String::length);
+
+        source.cancel();
+
+        assertTrue(derived.isCancelled());
+        assertThrows(LlamaCancelledException.class, derived::await);
+    }
+
+    @Test
+    @Timeout(10)
+    void whenCompleteOnCompletedFutureRunsActionBeforeReturning() {
+        var promise = new LlamaPromise<String>();
+        promise.complete("done");
+        var ran = new AtomicBoolean();
+        var runner = new AtomicReference<Thread>();
+
+        promise.future().whenComplete((v, err) -> {
+            ran.set(true);
+            runner.set(Thread.currentThread());
+        });
+
+        assertTrue(ran.get());
+        assertSame(Thread.currentThread(), runner.get());
     }
 
     // The worker completes the promise while this thread registers the listener. The barrier makes both start together.
