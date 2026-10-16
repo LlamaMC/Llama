@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.management.ThreadInfo;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
@@ -50,15 +51,24 @@ public final class Watchdog {
     }
 
     public void stop() {
+        stop(settings.pollInterval().multipliedBy(10));
+    }
+
+    /**
+     * @return {@code false} if the watchdog thread was still alive when the timeout ran out
+     */
+    public boolean stop(Duration timeout) {
         running = false;
         Thread current = thread;
-        if (current != null && current != Thread.currentThread()) {
-            current.interrupt();
-            try {
-                current.join(settings.pollInterval().multipliedBy(10));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+        if (current == null || current == Thread.currentThread()) {
+            return true;
+        }
+        current.interrupt();
+        try {
+            return current.join(timeout);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 

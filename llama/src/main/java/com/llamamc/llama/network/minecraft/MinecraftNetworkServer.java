@@ -15,6 +15,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 public final class MinecraftNetworkServer implements INetworkServer {
@@ -93,18 +94,39 @@ public final class MinecraftNetworkServer implements INetworkServer {
 
     @Override
     public synchronized void close() {
+        close(Duration.ofSeconds(SHUTDOWN_TIMEOUT_SECONDS));
+    }
+
+    /**
+     * Closes the channel, then both event loop groups, all within one budget.
+     *
+     * @return {@code false} if the channel or a group did not finish within the budget
+     */
+    public synchronized boolean close(Duration budget) {
+        var deadlineNanos = System.nanoTime() + budget.toNanos();
+        var terminated = true;
         if (channel != null) {
-            channel.close().syncUninterruptibly();
+            terminated = channel.close().awaitUninterruptibly(remainingNanos(deadlineNanos), TimeUnit.NANOSECONDS);
             channel = null;
         }
         if (acceptor != null) {
-            acceptor.shutdownGracefully(0, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS).syncUninterruptibly();
+            terminated = shutDown(acceptor, deadlineNanos) && terminated;
             acceptor = null;
         }
         if (workers != null) {
-            workers.shutdownGracefully(0, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS).syncUninterruptibly();
+            terminated = shutDown(workers, deadlineNanos) && terminated;
             workers = null;
         }
+        return terminated;
+    }
+
+    private static boolean shutDown(EventLoopGroup group, long deadlineNanos) {
+        group.shutdownGracefully(0, remainingNanos(deadlineNanos), TimeUnit.NANOSECONDS);
+        return group.terminationFuture().awaitUninterruptibly(remainingNanos(deadlineNanos), TimeUnit.NANOSECONDS);
+    }
+
+    private static long remainingNanos(long deadlineNanos) {
+        return Math.max(0, deadlineNanos - System.nanoTime());
     }
 
     @Override
