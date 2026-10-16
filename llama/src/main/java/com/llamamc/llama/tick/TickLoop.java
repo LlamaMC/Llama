@@ -41,7 +41,6 @@ public final class TickLoop {
     private volatile boolean running;
     private volatile boolean stopped;
     private volatile Thread tickThread;
-    private volatile int abandonedCount;
     private volatile long tickStartNanos;
     private volatile long tickStartGcPauseNanos;
     private volatile String currentPhase;
@@ -123,7 +122,6 @@ public final class TickLoop {
             Thread old = tickThread;
             if (!running || old == null) return null;
             abandoned.add(old);
-            abandonedCount = abandoned.size();
             old.setPriority(Thread.MIN_PRIORITY);
             old.interrupt();
             Thread fresh = newTickThread();
@@ -140,7 +138,7 @@ public final class TickLoop {
      * entry points so a thread that was given up can never touch the server again.
      */
     public void fence() {
-        if (abandonedCount != 0 && abandoned.contains(Thread.currentThread())) {
+        if (!abandoned.isEmpty() && abandoned.contains(Thread.currentThread())) {
             throw new AbandonedThreadError();
         }
     }
@@ -162,7 +160,6 @@ public final class TickLoop {
      */
     public List<Thread> abandonedThreads() {
         abandoned.removeIf(thread -> !thread.isAlive());
-        abandonedCount = abandoned.size();
         return List.copyOf(abandoned);
     }
 
@@ -222,7 +219,7 @@ public final class TickLoop {
         } catch (AbandonedThreadError e) {
             LOGGER.warn("Abandoned tick thread {} returned and was terminated", self.getName());
         } finally {
-            if (abandoned.remove(self)) abandonedCount = abandoned.size();
+            abandoned.remove(self);
         }
     }
 

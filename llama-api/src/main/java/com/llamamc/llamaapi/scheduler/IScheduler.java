@@ -10,8 +10,10 @@ public interface IScheduler {
     boolean isTickThread();
 
     // Never runs inline, even when called from the tick thread. Fails at once if the loop is stopped.
+    // Do not call join() on the returned future from the tick thread: the task can only run on that thread.
     LlamaFuture<Void> runOnTick(Runnable task);
 
+    // Do not call join() on the returned future from the tick thread: the task can only run on that thread.
     <T> LlamaFuture<T> callOnTick(Callable<T> task);
 
     // Ticks of zero or less behave like runOnTick.

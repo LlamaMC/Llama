@@ -98,6 +98,41 @@ class TickSchedulerTest {
     }
 
     @Test
+    @Timeout(5)
+    void queuedCallOnTickFailsWhenTheSchedulerCloses() {
+        LlamaFuture<String> queued = scheduler.callOnTick(() -> "value");
+        scheduler.close();
+        assertTrue(queued.isDone());
+        var error = assertThrows(LlamaAsyncException.class, queued::join);
+        assertInstanceOf(IllegalStateException.class, error.getCause());
+    }
+
+    @Test
+    @Timeout(5)
+    void runOnTickAfterCloseFailsAtOnce() {
+        scheduler.close();
+        LlamaFuture<Void> late = scheduler.runOnTick(() -> {});
+        assertTrue(late.isDone());
+        assertThrows(LlamaAsyncException.class, late::join);
+    }
+
+    @Test
+    @Timeout(5)
+    void runLaterTicksAfterCloseIsCancelledAtOnce() {
+        scheduler.close();
+        ITaskHandle handle = scheduler.runLaterTicks(3, () -> {});
+        assertTrue(handle.isCancelled());
+    }
+
+    @Test
+    @Timeout(5)
+    void queuedRunLaterTicksIsCancelledWhenTheSchedulerCloses() {
+        ITaskHandle handle = scheduler.runLaterTicks(3, () -> {});
+        scheduler.close();
+        assertTrue(handle.isCancelled());
+    }
+
+    @Test
     void supplyAsyncNeverRunsOnTheTickThread() {
         loop.start();
         Thread worker = scheduler.supplyAsync(Thread::currentThread).join();

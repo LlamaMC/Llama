@@ -238,6 +238,9 @@ public class Llama implements ILlama {
                 LOGGER.error("Tick thread did not stop within {} s", timeout.toSeconds());
             }
         }
+        if (scheduler != null) {
+            scheduler.close();
+        }
         if (server != null) {
             server.close();
         }
