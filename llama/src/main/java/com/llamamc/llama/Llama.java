@@ -14,6 +14,7 @@ import com.llamamc.llama.network.minecraft.MinecraftNetworkServer;
 import com.llamamc.llama.network.minecraft.ServerStatus;
 import com.llamamc.llama.network.minecraft.protocol.MinecraftProtocolVersion;
 import com.llamamc.llama.permission.PermissionService;
+import com.llamamc.llama.plugin.PluginLoader;
 import com.llamamc.llama.registry.MinecraftRegistries;
 import com.llamamc.llama.shutdown.ShutdownDeadline;
 import com.llamamc.llama.tick.TickLoop;
@@ -85,6 +86,7 @@ public class Llama implements ILlama {
     private volatile MinecraftNetworkServer server;
     private volatile WorldManager worldManager;
     private volatile MinecraftRegistries registries;
+    private volatile PluginLoader plugins;
 
     public void start() {
         var startedAt = System.nanoTime();
@@ -102,6 +104,8 @@ public class Llama implements ILlama {
         tickLoop.addPhase("chunks", worldManager::tickChunks);
         server = new MinecraftNetworkServer(new ServerStatus(llamaConfig.getMotd(), llamaConfig.getMaxPlayers()),
                 protocolVersion, worldManager.mainWorld(), registries);
+        plugins = new PluginLoader(Path.of("plugins"), Llama.class.getClassLoader(), scheduler, eventBus, commands, permissions);
+        plugins.loadAll();
         server.start(new InetSocketAddress(llamaConfig.getHost(), llamaConfig.getPort()));
         watchdog = new Watchdog(tickLoop, gcPauseTracker::totalPauseNanos, WatchdogSettings.defaults(), reason -> restart(reason, null));
         console = new Console(() -> requestShutdown(ExitCode.STOP, "Ctrl+C in console", null, false));
@@ -270,6 +274,10 @@ public class Llama implements ILlama {
         }
         if (watchdog != null && !watchdog.stop(deadline.forStage(WATCHDOG_STOP_BUDGET))) {
             unfinished.add("watchdog");
+        }
+        // Plugins disable while the tick loop still runs, so their tasks can finish before the scheduler closes.
+        if (plugins != null) {
+            plugins.disableAll();
         }
         if (tickLoop != null && !stopTickLoop(deadline)) {
             unfinished.add("tick loop");
