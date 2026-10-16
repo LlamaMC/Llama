@@ -8,6 +8,8 @@ import com.llamamc.llama.network.minecraft.protocol.Minecraft26_3Registries;
 import com.llamamc.llama.player.PlayerLifecycle;
 import com.llamamc.llama.player.TestPlayers;
 import com.llamamc.llama.world.FlatChunkGenerator;
+import com.llamamc.llamaapi.command.Command;
+import com.llamamc.llamaapi.command.ICommandContext;
 import com.llamamc.llamaapi.component.Component;
 import com.llamamc.llamaapi.concurrent.LlamaFuture;
 import com.llamamc.llamaapi.concurrent.LlamaPromise;
@@ -15,6 +17,7 @@ import com.llamamc.llamaapi.event.impl.player.PlayerJoinEvent;
 import com.llamamc.llamaapi.event.impl.player.PlayerPreJoinEvent;
 import com.llamamc.llamaapi.network.minecraft.packet.common.DisconnectPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchFinishedPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.CommandsPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.GameEvent;
 import com.llamamc.llamaapi.network.minecraft.packet.play.GameEventPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.PlayLoginPacket;
@@ -49,6 +52,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -165,7 +169,7 @@ class MinecraftNetworkServerTest {
     @Timeout(10)
     void answersStatusAndPingThroughTheHandlerWithoutASocket() throws IOException {
         var channel = new EmbeddedChannel(new MinecraftConnectionHandler(
-                new ServerStatus("Llama test server", 42), Minecraft26_3Protocol.createRegistry(), null, null));
+                new ServerStatus("Llama test server", 42), Minecraft26_3Protocol.createRegistry(), null, null, null));
 
         channel.writeInbound(Unpooled.wrappedBuffer(handshake(25_565, 1)));
         channel.writeInbound(Unpooled.wrappedBuffer(new byte[]{0}));
@@ -186,7 +190,10 @@ class MinecraftNetworkServerTest {
         var events = new EventBus();
         var permissions = new TestPlayers.Permissions();
         var scheduler = new TestPlayers.Scheduler();
-        var lifecycle = new PlayerLifecycle(scheduler, events, new CommandRegistry(permissions), permissions);
+        var commands = new CommandRegistry(permissions);
+        var stop = new StopHandler();
+        commands.register(stop, stop);
+        var lifecycle = new PlayerLifecycle(scheduler, events, commands, permissions);
         var joins = new ArrayList<PlayerJoinEvent>();
         events.on(PlayerJoinEvent.class, joins::add);
         var world = new FlatWorld();
@@ -194,7 +201,7 @@ class MinecraftNetworkServerTest {
         // Runnable::run as the chunk executor runs each load on the calling thread. The hop back to the event loop is
         // then queued on this thread, so the test drains it with runPendingTasks and no thread races the queue.
         var channel = new EmbeddedChannel(new MinecraftConnectionHandler(
-                new ServerStatus("Llama test server", 10), registry, world, lifecycle, Runnable::run));
+                new ServerStatus("Llama test server", 10), registry, world, lifecycle, commands, Runnable::run));
 
         logInThroughConfiguration(channel, "LlamaTester");
         channel.writeInbound(Unpooled.wrappedBuffer(new byte[]{3}));
@@ -206,6 +213,12 @@ class MinecraftNetworkServerTest {
                 decodeOutbound(registry, DefaultProtocolState.PLAY, playLogin));
         assertTrue(login.playerId() > 0);
         assertEquals(10, login.maxPlayers());
+
+        // The alias "halt" is not in the packet. Only the name of the registered command is.
+        var commandTree = outbound(channel);
+        expectPacketId(commandTree, 0x10);
+        assertEquals(new CommandsPacket(List.of("stop")),
+                decodeOutbound(registry, DefaultProtocolState.PLAY, commandTree));
 
         var gameEvent = outbound(channel);
         expectPacketId(gameEvent, 0x27);
@@ -265,7 +278,7 @@ class MinecraftNetworkServerTest {
         });
         var registry = Minecraft26_3Protocol.createRegistry();
         var channel = new EmbeddedChannel(new MinecraftConnectionHandler(
-                new ServerStatus("Llama test server", 10), registry, null, lifecycle));
+                new ServerStatus("Llama test server", 10), registry, null, lifecycle, null));
 
         logInThroughConfiguration(channel, "LlamaTester");
         channel.writeInbound(Unpooled.wrappedBuffer(new byte[]{3}));
@@ -539,6 +552,13 @@ class MinecraftNetworkServerTest {
         }
 
         return value;
+    }
+
+    // A method handler with an alias, so the join test checks that only the name reaches the commands packet.
+    private static final class StopHandler {
+        @Command(name = "stop", aliases = {"halt"})
+        public void stop(ICommandContext context) {
+        }
     }
 
     // Serves the flat generator's chunks from memory. The protocol path only calls chunkNow.

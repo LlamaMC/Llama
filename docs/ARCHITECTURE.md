@@ -38,7 +38,8 @@ Decision: a complete, state-based player lifecycle. Registration does not depend
   verify or forward chat signatures, so the server never sends signed `player_chat` (66). Signatures are read and
   ignored. The client shows the messages as system messages.
 - Commands: serverbound `chat_command` (7) and `chat_command_signed` (8) dispatch to the command registry with the
-  player as the sender.
+  player as the sender. The server sends the clientbound `commands` packet (16) on join, with one literal node per
+  registered command name and no aliases, so the client can tab-complete them.
 - Status: the packet IDs above are verified. Implementation status is tracked in section 10.
 
 ## 2. World writes and persistence

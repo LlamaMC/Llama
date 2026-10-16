@@ -49,7 +49,7 @@ class MinecraftConnectionHandlerTest {
             new PlayerLifecycle(scheduler, events, new CommandRegistry(permissions), permissions);
     private final PacketRegistry packets = Minecraft26_3Protocol.createRegistry();
     private final EmbeddedChannel channel = new EmbeddedChannel(new MinecraftConnectionHandler(
-            new ServerStatus("Llama test server", 10), packets, null, lifecycle));
+            new ServerStatus("Llama test server", 10), packets, null, lifecycle, null));
 
     @Test
     void closingTheConnectionQuitsThePlayerExactlyOnce() {

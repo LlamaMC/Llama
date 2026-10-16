@@ -111,7 +111,7 @@ public class Llama implements ILlama {
                 tickExecutor(tickLoop));
         tickLoop.addPhase("chunks", worldManager::tickChunks);
         server = new MinecraftNetworkServer(new ServerStatus(llamaConfig.getMotd(), llamaConfig.getMaxPlayers()),
-                protocolVersion, worldManager.mainWorld(), registries, playerLifecycle);
+                protocolVersion, worldManager.mainWorld(), registries, playerLifecycle, commands);
         plugins = new PluginLoader(Path.of("plugins"), Llama.class.getClassLoader(), this, scheduler, eventBus, commands, permissions);
         plugins.loadAll();
         server.start(new InetSocketAddress(llamaConfig.getHost(), llamaConfig.getPort()));

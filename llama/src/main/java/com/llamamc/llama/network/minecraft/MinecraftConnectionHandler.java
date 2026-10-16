@@ -6,6 +6,7 @@ import com.llamamc.llama.network.minecraft.protocol.Minecraft26_3Registries;
 import com.llamamc.llama.player.IPlayerConnection;
 import com.llamamc.llama.player.NetworkPlayer;
 import com.llamamc.llama.player.PlayerLifecycle;
+import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.component.Component;
 import com.llamamc.llamaapi.network.minecraft.packet.common.DisconnectPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.common.KeepAlivePacket;
@@ -29,6 +30,7 @@ import com.llamamc.llamaapi.network.minecraft.packet.play.ChatPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchReceivedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchFinishedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchStartPacket;
+import com.llamamc.llamaapi.network.minecraft.packet.play.CommandsPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ForgetLevelChunkPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.GameEvent;
 import com.llamamc.llamaapi.network.minecraft.packet.play.GameEventPacket;
@@ -97,6 +99,8 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     private final IWorld world;
     // Null runs the protocol without players: the join packets are sent at once and nothing is registered.
     private final PlayerLifecycle lifecycle;
+    // Null leaves the commands packet out of the join.
+    private final ICommandRegistry commands;
     private final Executor chunkExecutor;
 
     private DefaultProtocolState state = DefaultProtocolState.HANDSHAKE;
@@ -117,14 +121,14 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     private boolean spawnPositionPending;
 
     MinecraftConnectionHandler(ServerStatus status, PacketRegistry registry, IWorld world,
-                               PlayerLifecycle lifecycle) {
-        this(status, registry, world, lifecycle, CHUNK_REQUEST_EXECUTOR);
+                               PlayerLifecycle lifecycle, ICommandRegistry commands) {
+        this(status, registry, world, lifecycle, commands, CHUNK_REQUEST_EXECUTOR);
     }
 
     // The chunk executor runs the chunk loads and their hop back to the event loop. A caller that runs the loads on the
     // calling thread gets a fixed order, which the protocol tests rely on.
     MinecraftConnectionHandler(ServerStatus status, PacketRegistry registry, IWorld world,
-                               PlayerLifecycle lifecycle, Executor chunkExecutor) {
+                               PlayerLifecycle lifecycle, ICommandRegistry commands, Executor chunkExecutor) {
         if (chunkExecutor == null) {
             throw new IllegalArgumentException("Chunk executor must not be null");
         }
@@ -133,6 +137,7 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
         this.registry = registry;
         this.world = world;
         this.lifecycle = lifecycle;
+        this.commands = commands;
         this.chunkExecutor = chunkExecutor;
     }
 
@@ -318,6 +323,9 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     private List<IPacket> joinPackets(int entityId) {
         var packets = new ArrayList<IPacket>();
         packets.add(new PlayLoginPacket(entityId, status.maxPlayers(), VIEW_DISTANCE, VIEW_DISTANCE));
+        if (commands != null) {
+            packets.add(new CommandsPacket(commands.commandNames()));
+        }
         if (world == null) {
             packets.add(new PlayerPositionPacket(0, 0.5, 512.0, 0.5, 0.0F, 0.0F));
         } else {

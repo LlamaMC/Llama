@@ -2,6 +2,7 @@ package com.llamamc.llama.network.minecraft;
 
 import com.llamamc.llama.player.PlayerLifecycle;
 import com.llamamc.llama.registry.MinecraftRegistries;
+import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.network.INetworkServer;
 import com.llamamc.llama.network.minecraft.protocol.MinecraftProtocolVersion;
 import com.llamamc.llamaapi.network.protocol.PacketRegistry;
@@ -27,6 +28,7 @@ public final class MinecraftNetworkServer implements INetworkServer {
     private final PacketRegistry registry;
     private final IWorld world;
     private final PlayerLifecycle lifecycle;
+    private final ICommandRegistry commands;
 
     private EventLoopGroup acceptor;
     private EventLoopGroup workers;
@@ -34,22 +36,24 @@ public final class MinecraftNetworkServer implements INetworkServer {
 
     public MinecraftNetworkServer(ServerStatus status) {
         this(status, MinecraftProtocolVersion.V26_3, null,
-                new MinecraftRegistries(MinecraftProtocolVersion.V26_3), null);
+                new MinecraftRegistries(MinecraftProtocolVersion.V26_3), null, null);
     }
 
     public MinecraftNetworkServer(ServerStatus status, MinecraftProtocolVersion protocolVersion) {
-        this(status, protocolVersion, null, new MinecraftRegistries(protocolVersion), null);
+        this(status, protocolVersion, null, new MinecraftRegistries(protocolVersion), null, null);
     }
 
     public MinecraftNetworkServer(ServerStatus status, MinecraftProtocolVersion protocolVersion, IWorld world) {
-        this(status, protocolVersion, world, new MinecraftRegistries(protocolVersion), null);
+        this(status, protocolVersion, world, new MinecraftRegistries(protocolVersion), null, null);
     }
 
     /**
      * @param lifecycle the player runtime, or {@code null} to run the protocol without players
+     * @param commands the registry whose command names the join sends, or {@code null} to send no commands packet
      */
     public MinecraftNetworkServer(ServerStatus status, MinecraftProtocolVersion protocolVersion, IWorld world,
-                                  MinecraftRegistries gameRegistries, PlayerLifecycle lifecycle) {
+                                  MinecraftRegistries gameRegistries, PlayerLifecycle lifecycle,
+                                  ICommandRegistry commands) {
         if (status == null) {
             throw new IllegalArgumentException("status cannot be null");
         }
@@ -60,6 +64,7 @@ public final class MinecraftNetworkServer implements INetworkServer {
         this.status = status;
         this.world = world;
         this.lifecycle = lifecycle;
+        this.commands = commands;
         registry = protocolVersion.createRegistry(gameRegistries);
     }
 
@@ -86,7 +91,8 @@ public final class MinecraftNetworkServer implements INetworkServer {
                             socket.pipeline()
                                     .addLast(new MinecraftFrameDecoder())
                                     .addLast(new MinecraftFrameEncoder())
-                                    .addLast(new MinecraftConnectionHandler(status, registry, world, lifecycle));
+                                    .addLast(new MinecraftConnectionHandler(status, registry, world, lifecycle,
+                                            commands));
                         }
                     })
                     .bind(address)
