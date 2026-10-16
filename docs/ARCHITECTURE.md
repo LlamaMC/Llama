@@ -208,12 +208,14 @@ Filled in as work lands. Each line says what is in the code, with the commit tha
   before it leaves memory, and its removal waits for any running save. A failed save keeps the chunk loaded, logs a
   warning and starts a new idle period. A new ticket or any access during `EVICTING` cancels the eviction. `unloadChunk`
   uses the same path.
-- **6. Block-state palettes** (d0f94d6, 568ea0b, 4949e53, 7b7f73d): the protocol encoder picks the mode for each section
-  from its count of distinct states: single for one state, indirect for 2 to 256 states (4 to 8 bits), and direct above
-  256, where entries are global state IDs packed at the bit width of the registry. The global registry is read from
-  `minecraft/26.3/blocks.tsv`, which `scripts/generate_block_states.py` writes from the official `blocks.json`. Not done:
-  direct palettes exist only in the protocol encoder. In memory, a chunk keeps one palette with 16-bit indexes, so there
-  is no promotion, demotion or compaction on save.
+- **6. Block-state palettes** (d0f94d6, 568ea0b, 4949e53, 7b7f73d, 0ec444d): the protocol encoder picks the mode for each
+  section from its count of distinct states: single for one state, indirect for 2 to 256 states (4 to 8 bits), and direct
+  above 256, where entries are global state IDs packed at the bit width of the registry. The global registry is read from
+  `minecraft/26.3/blocks.tsv`, which `scripts/generate_block_states.py` writes from the official `blocks.json`. On save,
+  the encoder builds the palette from the blocks it writes, so entries that no block uses are dropped. A chunk that uses
+  256 states or fewer is stored with one-byte indexes (data version 5024), even if it once held more. Not done: direct
+  palettes exist only in the protocol encoder. In memory, a loaded chunk's palette only grows until the chunk is unloaded,
+  so the 65,536-state limit counts every state the chunk has held since it was loaded.
 - **7. Shutdown** (e858ff1, 2556101, 414d9cb, 1f95868, 0329f02, 9a7037b, 8834d69): the shutdown sequence in `Llama`
   disconnects players, closes the console, stops the watchdog, disables plugins, stops the tick loop, closes the
   scheduler and the server, and closes the worlds, in that order. Each stage waits for its own budget (players 5 s, tick
