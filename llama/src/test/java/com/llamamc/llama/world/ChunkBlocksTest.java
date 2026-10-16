@@ -22,9 +22,11 @@ class ChunkBlocksTest {
     private static final int EARLY_WRITES = 1_000;
     private static final int HISTORY_WRITES = 70_000;
     private static final int REFUSALS = 1_000;
-    private static final int SPARSE_STATES = 100;
-    // More than half of the SPARSE_STATES + 1 palette entries, so the next store compacts.
-    private static final int FREED_SLOTS = 51;
+    private static final int CHURN_CYCLES = 1_000;
+    // AIR plus SPARSE_STATES states make 199 entries. FREED_SLOTS is above the compaction floor and the first count
+    // above half of them, so the loop that frees them stays below the trigger and only the store after it compacts.
+    private static final int SPARSE_STATES = 198;
+    private static final int FREED_SLOTS = 100;
 
     @Test
     void replacedStatesDoNotCountTowardTheCapAndAnEarlierSnapshotKeepsItsBlocks() {
@@ -94,6 +96,26 @@ class ChunkBlocksTest {
             var expectedState = index < FREED_SLOTS ? BlockState.AIR : distinctState(index);
             assertEquals(expectedState, stateAt(after, index));
         }
+    }
+
+    @Test
+    void smallPaletteWithChurnDoesNotScan() {
+        var blocks = ChunkBlocks.copyOf(airChunk(MIN_Y, SHORT_HEIGHT));
+        var scans = blocks.paletteScans();
+
+        // Two positions take new states and go back to AIR, so each cycle frees two slots against a palette of three.
+        // Free slots are reused first, so the palette stays at three entries and the freed slots never reach the floor.
+        for (var cycle = 0; cycle < CHURN_CYCLES; cycle++) {
+            place(blocks, 0, distinctState(2 * cycle));
+            place(blocks, 1, distinctState(2 * cycle + 1));
+            place(blocks, 0, BlockState.AIR);
+            place(blocks, 1, BlockState.AIR);
+        }
+
+        assertEquals(scans, blocks.paletteScans());
+        assertEquals(3, blocks.paletteSize());
+        assertEquals(BlockState.AIR, stateAt(blocks.snapshot(), 0));
+        assertEquals(BlockState.AIR, stateAt(blocks.snapshot(), 1));
     }
 
     @Test

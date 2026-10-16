@@ -16,6 +16,8 @@ final class ChunkBlocks {
     // Both the snapshot and the codec index palette entries with 16 bits, so a chunk cannot hold more states in use.
     private static final int MAX_PALETTE = 65_536;
     private static final int INITIAL_SLOTS = 16;
+    // Compaction scans the whole palette. A small palette with a few freed slots costs less to keep than to scan.
+    private static final int MIN_FREED_SLOTS_TO_COMPACT = 64;
 
     private final ChunkPosition position;
     private final int minY;
@@ -157,9 +159,10 @@ final class ChunkBlocks {
     }
 
     // Freed slots keep their old states until a write reuses them, and every snapshot copies those states. Once they
-    // outnumber the live slots, the next store compacts the palette, so stale states stay bounded by the live ones.
+    // outnumber the live slots and reach the floor, the next store compacts the palette, so stale states stay bounded
+    // by the live ones plus the floor.
     private void compactIfSparse() {
-        if (freeSlots.size() * 2 <= palette.size()) {
+        if (freeSlots.size() < MIN_FREED_SLOTS_TO_COMPACT || freeSlots.size() * 2 <= palette.size()) {
             return;
         }
 
