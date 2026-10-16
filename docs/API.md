@@ -13,8 +13,9 @@ The runtime gives the plugin an `ILlama`. Plugins receive it through their const
 ```java
 import com.llamamc.llamaapi.ILlama;
 import com.llamamc.llamaapi.event.impl.player.PlayerJoinEvent;
+import com.llamamc.llamaapi.plugin.IPlugin;
 
-public final class WelcomePlugin {
+public final class WelcomePlugin implements IPlugin {
 
     public WelcomePlugin(ILlama llama) {
         llama.events().on(PlayerJoinEvent.class, event ->

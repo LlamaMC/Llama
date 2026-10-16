@@ -198,7 +198,7 @@ Filled in as work lands. Each line says what is in the code, with the commit tha
 - **4. Plugins** (557f619, 1ba79fb, 599d643, 0a8410d): `PluginLoader` loads the jars in `plugins/` in dependency order,
   using Kahn's algorithm over `depends` and `softDepends`. Each jar has its own class loader, whose parent is the server
   loader. A cycle disables every plugin on it, and a missing hard dependency disables the plugins that need it.
-  Constructor injection supplies `IScheduler`, `IPermissionService`, `IEventBus`, `ICommandRegistry`, `IPluginContext`
+  Constructor injection supplies `IScheduler`, `IPermissionService`, `IEventBus`, `ICommandRegistry`, `ILlama`, `IPluginContext`
   and `Logger`, plus the services that a hard dependency publishes through `IPluginContext.provide`. `disable()` runs in
   reverse load order, and the plugin's handlers and commands are removed after it. Not done: there is no hot reload.
 - **5. Chunk eviction** (141514a, 80813d5, 49f6200, f4e0808): tickets (`PLAYER`, `PLUGIN`, `GENERATION`, `SYSTEM`) keep a
