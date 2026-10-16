@@ -16,10 +16,18 @@ public final class VicunaChunkStorage implements IChunkStorage {
     private static final Logger LOGGER = LoggerFactory.getLogger(VicunaChunkStorage.class);
 
     private final Path directory;
+    private final VicunaRegionFile.IFileMover mover;
+    private final VicunaRegionFile.IChannelOpener opener;
     private final ConcurrentHashMap<RegionPosition, VicunaRegionFile> regions = new ConcurrentHashMap<>();
 
     public VicunaChunkStorage(Path worldDirectory) {
+        this(worldDirectory, VicunaRegionFile.REPLACE_ATOMICALLY, VicunaRegionFile.OPEN_FILE);
+    }
+
+    VicunaChunkStorage(Path worldDirectory, VicunaRegionFile.IFileMover mover, VicunaRegionFile.IChannelOpener opener) {
         directory = worldDirectory.resolve("region");
+        this.mover = mover;
+        this.opener = opener;
     }
 
     @Override
@@ -59,7 +67,7 @@ public final class VicunaChunkStorage implements IChunkStorage {
     private static void compactAfterWrite(VicunaRegionFile region, ChunkPosition position) {
         try {
             region.compactIfNeeded();
-        } catch (IOException error) {
+        } catch (IOException | RuntimeException error) {
             LOGGER.warn("Could not compact VICUÑA region {},{}", position.regionX(), position.regionZ(), error);
         }
     }
@@ -92,7 +100,7 @@ public final class VicunaChunkStorage implements IChunkStorage {
     private VicunaRegionFile open(RegionPosition position) {
         var path = directory.resolve("r." + position.x() + "." + position.z() + ".vca");
         try {
-            return new VicunaRegionFile(path, position.x(), position.z());
+            return new VicunaRegionFile(path, position.x(), position.z(), mover, opener);
         } catch (IOException error) {
             throw new UncheckedIOException(error);
         }
