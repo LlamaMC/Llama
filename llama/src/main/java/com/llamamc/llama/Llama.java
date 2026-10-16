@@ -67,6 +67,7 @@ public class Llama implements ILlama {
     private static final Duration TICK_STOP_BUDGET = Duration.ofSeconds(10);
     private static final Duration HUNG_TICK_STOP_BUDGET = Duration.ofSeconds(1);
     private static final Duration WATCHDOG_STOP_BUDGET = Duration.ofSeconds(1);
+    private static final Duration PLAYER_DISCONNECT_BUDGET = Duration.ofSeconds(5);
     private static final Duration SERVER_CLOSE_BUDGET = Duration.ofSeconds(5);
     private static final Duration WORLD_CLOSE_BUDGET = Duration.ofSeconds(35);
 
@@ -276,6 +277,10 @@ public class Llama implements ILlama {
         logShutdown(request);
         var deadline = request.deadline();
         var unfinished = new ArrayList<String>();
+        // Players leave first, while the tick loop and the scheduler still run, so their quit events can fire.
+        if (!disconnectPlayers(deadline)) {
+            unfinished.add("players");
+        }
         if (console != null) {
             console.close();
         }
@@ -310,6 +315,32 @@ public class Llama implements ILlama {
             return;
         }
         LOGGER.error("Shutdown incomplete, these stages did not finish in time: {}", unfinished);
+    }
+
+    // The disconnects run on the tick thread. The wait is bounded by the stage budget, and a player still online after it
+    // counts as unfinished.
+    private boolean disconnectPlayers(ShutdownDeadline deadline) {
+        var lifecycle = playerLifecycle;
+        if (lifecycle == null) {
+            return true;
+        }
+        var done = new CountDownLatch(1);
+        lifecycle.disconnectAll().whenComplete((ignored, error) -> done.countDown());
+        awaitLatch(done, deadline.forStage(PLAYER_DISCONNECT_BUDGET));
+        var stillOnline = lifecycle.registry().online().size();
+        if (stillOnline == 0) {
+            return true;
+        }
+        LOGGER.error("{} players did not quit within the shutdown budget", stillOnline);
+        return false;
+    }
+
+    private static void awaitLatch(CountDownLatch latch, Duration budget) {
+        try {
+            latch.await(budget.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private boolean stopTickLoop(ShutdownDeadline deadline) {

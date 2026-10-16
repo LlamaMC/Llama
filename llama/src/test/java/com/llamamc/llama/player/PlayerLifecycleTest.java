@@ -81,6 +81,32 @@ class PlayerLifecycleTest {
         assertEquals(1, quits.size());
     }
 
+    @Test
+    void shutdownDisconnectsEveryPlayerAndFiresOneQuitForEach() {
+        var quits = new ArrayList<PlayerQuitEvent>();
+        events.on(PlayerQuitEvent.class, quits::add);
+        var aliceConnection = new TestPlayers.Connection();
+        var bobConnection = new TestPlayers.Connection();
+        var alice = join("Alice", aliceConnection);
+        var bob = join("Bob", bobConnection);
+
+        var done = lifecycle.disconnectAll();
+        scheduler.runQueued();
+
+        assertTrue(done.isDone());
+        assertEquals(Component.of("Server closed"), aliceConnection.disconnectReason());
+        assertEquals(Component.of("Server closed"), bobConnection.disconnectReason());
+        assertEquals(2, quits.size());
+        assertTrue(quits.stream().map(PlayerQuitEvent::player).toList().containsAll(List.of(alice, bob)));
+        assertTrue(lifecycle.registry().online().isEmpty());
+
+        // The sockets close after the kick. Their quits are already done, so no second event follows.
+        lifecycle.requestQuit(alice);
+        lifecycle.requestQuit(bob);
+        scheduler.runQueued();
+        assertEquals(2, quits.size());
+    }
+
     private NetworkPlayer join(String name, TestPlayers.Connection connection) {
         var uniqueId = UUID.nameUUIDFromBytes(name.getBytes(StandardCharsets.UTF_8));
         var player = lifecycle.createPlayer(uniqueId, name, "vanilla", connection);

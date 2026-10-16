@@ -59,6 +59,11 @@ public final class PlayerRegistry implements IPlayerRegistry {
         return Optional.ofNullable(players.get(uniqueId));
     }
 
+    // A copy, so the caller can remove players while it walks the list.
+    List<NetworkPlayer> sessions() {
+        return List.copyOf(players.values());
+    }
+
     @Override
     public List<IPlayer> online() {
         return List.<IPlayer>copyOf(players.values());

@@ -3,6 +3,7 @@ package com.llamamc.llama.player;
 import com.llamamc.llama.command.PlayerSender;
 import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.component.Component;
+import com.llamamc.llamaapi.concurrent.LlamaFuture;
 import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.event.impl.chat.ChatEvent;
 import com.llamamc.llamaapi.event.impl.player.PlayerJoinEvent;
@@ -22,6 +23,7 @@ import java.util.UUID;
  */
 public final class PlayerLifecycle {
     private static final String ANOTHER_LOCATION = "You logged in from another location.";
+    private static final String SERVER_CLOSED = "Server closed";
     private static final String UNKNOWN_COMMAND = "Unknown command.";
 
     private final IScheduler scheduler;
@@ -76,6 +78,15 @@ public final class PlayerLifecycle {
         scheduler.runOnTick(() -> quit(player));
     }
 
+    /**
+     * Disconnects every registered player with the server-closed reason and fires one quit event for each. The work runs
+     * on the tick thread, so the tick loop and the scheduler must still be running. The future completes once the work
+     * has run, and fails at once when the loop is stopped.
+     */
+    public LlamaFuture<Void> disconnectAll() {
+        return scheduler.runOnTick(() -> disconnectRegistered(Component.of(SERVER_CLOSED)));
+    }
+
     public void requestChat(NetworkPlayer player, String message) {
         if (player == null) {
             throw new IllegalArgumentException("Player must not be null");
@@ -120,9 +131,20 @@ public final class PlayerLifecycle {
             return;
         }
 
-        var old = previous.get();
-        old.kick(Component.of(ANOTHER_LOCATION));
-        quit(old);
+        disconnect(previous.get(), Component.of(ANOTHER_LOCATION));
+    }
+
+    private void disconnectRegistered(Component reason) {
+        for (var player : registry.sessions()) {
+            disconnect(player, reason);
+        }
+    }
+
+    // The kick sends the disconnect. The quit runs here rather than waiting for the socket to close, and the quit flag
+    // makes the later socket close a no-op.
+    private void disconnect(NetworkPlayer player, Component reason) {
+        player.kick(reason);
+        quit(player);
     }
 
     private void joined(NetworkPlayer player) {
