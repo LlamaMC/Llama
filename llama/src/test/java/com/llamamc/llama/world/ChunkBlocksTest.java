@@ -9,18 +9,23 @@ import org.junit.jupiter.api.Timeout;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Timeout(30)
 class ChunkBlocksTest {
     private static final int SHORT_HEIGHT = 16;
     private static final int TALL_HEIGHT = 384;
     private static final int MIN_Y = -64;
-    private static final int OLD_CAP = 65_536;
+    private static final int MAX_STATES = 65_536;
     private static final int EARLY_WRITES = 1_000;
     private static final int HISTORY_WRITES = 70_000;
+    private static final int REFUSALS = 1_000;
+    // Refusals are constant-time checks. A rescan per refusal would take seconds, so this bound is generous.
+    private static final long REFUSAL_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(2);
 
     @Test
     void replacedStatesDoNotCountTowardTheCapAndAnEarlierSnapshotKeepsItsBlocks() {
@@ -44,21 +49,86 @@ class ChunkBlocksTest {
     }
 
     @Test
-    void aChunkWhoseStatesInUseReachTheCapRefusesAnotherState() {
+    void aChunkAtTheCapRefusesNewStatesInConstantTime() {
+        var blocks = fullChunk();
+        var revision = blocks.revision();
+        var started = System.nanoTime();
+
+        // Each attempt writes a new state over an AIR block. AIR keeps other blocks, so the write needs a new slot.
+        for (var refusal = 0; refusal < REFUSALS; refusal++) {
+            var index = MAX_STATES - 1 + refusal;
+            assertThrows(IllegalStateException.class, () -> setDistinct(blocks, index));
+        }
+        var elapsed = System.nanoTime() - started;
+
+        assertEquals(revision, blocks.revision());
+        assertEquals(BlockState.AIR, stateAt(blocks.snapshot(), MAX_STATES - 1));
+        assertTrue(elapsed < REFUSAL_BUDGET_NANOS, "Refusals took " + elapsed + " ns");
+    }
+
+    @Test
+    void overwritingTheOnlyBlockOfAStateAtTheCapIsAccepted() {
+        var blocks = fullChunk();
+        var replacement = distinctState(MAX_STATES);
+
+        // Index 0 holds the only block of its state, so this write frees that state's slot before it needs one.
+        place(blocks, 0, replacement);
+
+        var snapshot = blocks.snapshot();
+        assertEquals(replacement, stateAt(snapshot, 0));
+        assertEquals(distinctState(1), stateAt(snapshot, 1));
+        // The chunk is back at the cap, so one more new state is refused.
+        assertThrows(IllegalStateException.class, () -> setDistinct(blocks, MAX_STATES + 1));
+    }
+
+    @Test
+    void aFreeSlotIsReusedBeforeTheChunkTakesANewOne() {
+        var blocks = fullChunk();
+        // Writing AIR over the only block of state 0 frees its slot. AIR already has a slot, so this write needs none.
+        place(blocks, 0, BlockState.AIR);
+
+        // The chunk is at the cap, so this new state is accepted only because it reuses the freed slot.
+        setDistinct(blocks, MAX_STATES - 1);
+
+        var snapshot = blocks.snapshot();
+        assertEquals(BlockState.AIR, stateAt(snapshot, 0));
+        assertEquals(distinctState(MAX_STATES - 1), stateAt(snapshot, MAX_STATES - 1));
+        // The reused slot is in use again, so the chunk is at the cap and one more new state is refused.
+        assertThrows(IllegalStateException.class, () -> setDistinct(blocks, MAX_STATES));
+    }
+
+    // AIR fills every position the writes leave alone, so the states in use are AIR and the MAX_STATES - 1 distinct
+    // states written here.
+    private static ChunkBlocks fullChunk() {
         var blocks = ChunkBlocks.copyOf(airChunk(MIN_Y, TALL_HEIGHT));
-        // AIR still fills the rest of the chunk, so the states in use are the 65,535 written here plus AIR.
-        for (var index = 0; index < OLD_CAP - 1; index++) {
+        for (var index = 0; index < MAX_STATES - 1; index++) {
             setDistinct(blocks, index);
         }
-
-        assertThrows(IllegalStateException.class, () -> setDistinct(blocks, OLD_CAP - 1));
+        return blocks;
     }
 
     private static void setDistinct(ChunkBlocks blocks, int index) {
-        var localX = index % IChunk.WIDTH;
-        var localZ = index / IChunk.WIDTH % IChunk.WIDTH;
-        var blockY = MIN_Y + index / (IChunk.WIDTH * IChunk.WIDTH);
-        blocks.set(localX, blockY, localZ, distinctState(index));
+        place(blocks, index, distinctState(index));
+    }
+
+    private static void place(ChunkBlocks blocks, int index, BlockState state) {
+        blocks.set(localX(index), blockY(index), localZ(index), state);
+    }
+
+    private static BlockState stateAt(IChunk chunk, int index) {
+        return chunk.block(localX(index), blockY(index), localZ(index));
+    }
+
+    private static int localX(int index) {
+        return index % IChunk.WIDTH;
+    }
+
+    private static int localZ(int index) {
+        return index / IChunk.WIDTH % IChunk.WIDTH;
+    }
+
+    private static int blockY(int index) {
+        return MIN_Y + index / (IChunk.WIDTH * IChunk.WIDTH);
     }
 
     private static GeneratedChunk airChunk(int minY, int height) {
