@@ -88,7 +88,8 @@ public class Llama implements ILlama {
         gcPauseTracker = GcPauseTracker.install();
         tickLoop = new TickLoop(gcPauseTracker::totalPauseNanos, this::onTickError);
         scheduler = new TickScheduler(tickLoop);
-        worldManager = new WorldManager(worldsConfig, Path.of("worlds"), tickLoop::isTickThread);
+        worldManager = new WorldManager(worldsConfig, Path.of("worlds"), tickLoop::isTickThread, tickLoop::tickCount);
+        tickLoop.addPhase("chunks", worldManager::tickChunks);
         server = new MinecraftNetworkServer(new ServerStatus(llamaConfig.getMotd(), llamaConfig.getMaxPlayers()),
                 protocolVersion, worldManager.mainWorld(), registries);
         server.start(new InetSocketAddress(llamaConfig.getHost(), llamaConfig.getPort()));

@@ -18,8 +18,9 @@ public interface IWorld {
 
     /**
      * Removes a loaded chunk from memory. The chunk stays in storage, so the next chunk() call reloads it. Returns
-     * false if the chunk is not loaded, still loading, or the world is closed. Chunks that callers already hold stay
-     * valid, because chunks are immutable.
+     * false if the chunk is not loaded, still loading, held by a ticket, being evicted, or the world is closed. A chunk
+     * that must be saved first is removed by a later eviction tick, and this call then returns false. Chunks that
+     * callers already hold stay valid, because chunks are immutable.
      */
     boolean unloadChunk(int chunkX, int chunkZ);
 
@@ -30,6 +31,14 @@ public interface IWorld {
      * because the pool that runs the load may be the one that is blocked.
      */
     LlamaFuture<IChunk> chunk(int chunkX, int chunkZ);
+
+    /**
+     * Loads the chunk if it is not loaded and returns a ticket once it is loaded. The chunk stays in memory until the
+     * ticket is closed. Callable from any thread and never blocks. The future fails if the world is closed or too many
+     * loads are pending. Do not call join() or await() on it from a chunk generator or from any world worker thread,
+     * for the same reason as {@link #chunk}.
+     */
+    LlamaFuture<IChunkTicket> ticket(int chunkX, int chunkZ, ChunkTicketType type);
 
     /**
      * Blocks until the chunk is loaded. Throws IllegalStateException on the tick thread and on a world worker thread,

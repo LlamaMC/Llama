@@ -17,26 +17,32 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 
 public final class WorldManager implements IWorldManager, AutoCloseable {
+    // Per world and per tick. Bounds the idle scan, so the cost of one tick stays the same however many chunks are loaded.
+    private static final int CHUNKS_EXAMINED_PER_TICK = 64;
+
     private final Map<String, LlamaWorld> worlds;
     private final LlamaWorld mainWorld;
     private final ChunkScheduler scheduler;
+    private final LongSupplier tickClock;
 
     public WorldManager(WorldsConfig config, Path rootDirectory) {
-        this(config, rootDirectory, () -> false);
+        this(config, rootDirectory, () -> false, () -> 0L);
     }
 
-    public WorldManager(WorldsConfig config, Path rootDirectory, BooleanSupplier onTickThread) {
+    public WorldManager(WorldsConfig config, Path rootDirectory, BooleanSupplier onTickThread, LongSupplier tickClock) {
         var configuredWorlds = config.getWorlds();
         if (configuredWorlds == null || configuredWorlds.isEmpty()) {
             throw new IllegalArgumentException("At least one world must be configured");
         }
 
         scheduler = new ChunkScheduler("Shared");
+        this.tickClock = tickClock;
         var loaded = new LinkedHashMap<String, LlamaWorld>();
         configuredWorlds.forEach((name, world) ->
-                loaded.put(name, create(name, world, rootDirectory, scheduler, onTickThread)));
+                loaded.put(name, create(name, world, rootDirectory, scheduler, onTickThread, tickClock)));
         worlds = Collections.unmodifiableMap(loaded);
         mainWorld = loaded.getOrDefault("main", loaded.values().iterator().next());
     }
@@ -54,6 +60,14 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
     @Override
     public IWorld mainWorld() {
         return mainWorld;
+    }
+
+    // Runs in the "chunks" tick phase, once per tick.
+    public void tickChunks() {
+        var tick = tickClock.getAsLong();
+        for (var world : worlds.values()) {
+            world.evictionTick(tick, CHUNKS_EXAMINED_PER_TICK);
+        }
     }
 
     @Override
@@ -77,12 +91,12 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
     }
 
     private static LlamaWorld create(String name, WorldsConfig.ConfigWorld config, Path rootDirectory,
-                                     ChunkScheduler scheduler, BooleanSupplier onTickThread) {
+                                     ChunkScheduler scheduler, BooleanSupplier onTickThread, LongSupplier tickClock) {
         var directory = rootDirectory.resolve(name);
         var seed = config.getSeed() == null ? "0" : config.getSeed();
         var generator = generator(config.getType(), config.getDimension(), parseSeed(seed));
         return new LlamaWorld(name, seed, directory, config.getDimension(), config.getType(), generator,
-                new VicunaChunkStorage(directory), scheduler, onTickThread);
+                new VicunaChunkStorage(directory), scheduler, onTickThread, ChunkServices.of(tickClock));
     }
 
     private static IChunkGenerator generator(WorldType type, DimensionType dimension, long seed) {

@@ -17,8 +17,10 @@ import com.llamamc.llamaapi.network.protocol.DefaultProtocolState;
 import com.llamamc.llamaapi.network.protocol.PacketFlow;
 import com.llamamc.llamaapi.world.BlockState;
 import com.llamamc.llamaapi.world.ChunkPosition;
+import com.llamamc.llamaapi.world.ChunkTicketType;
 import com.llamamc.llamaapi.world.DimensionType;
 import com.llamamc.llamaapi.world.IChunk;
+import com.llamamc.llamaapi.world.IChunkTicket;
 import com.llamamc.llamaapi.world.IWorld;
 import com.llamamc.llamaapi.world.WorldType;
 import io.netty.buffer.ByteBuf;
@@ -320,6 +322,13 @@ class Minecraft26_3ChunkProtocolTest {
         @Override
         public IChunk chunkNow(int chunkX, int chunkZ) {
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public LlamaFuture<IChunkTicket> ticket(int chunkX, int chunkZ, ChunkTicketType type) {
+            var promise = new LlamaPromise<IChunkTicket>();
+            promise.fail(new UnsupportedOperationException());
+            return promise.future();
         }
 
         @Override
