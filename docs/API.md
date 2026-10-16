@@ -32,7 +32,7 @@ public final class WelcomePlugin {
 }
 ```
 
-Two points about this example. The runtime does not post `PlayerJoinEvent` yet (section 9), so that handler never runs. The chunk callback runs on the thread that finishes the load, which is a world worker thread for a new load, so it uses `runOnTick` to get back to the tick thread.
+Two points about this example. The runtime posts `PlayerJoinEvent` on the tick thread after a player's join packets have been sent, so the first handler runs for each player who joins. The chunk callback runs on the thread that finishes the load, which is a world worker thread for a new load, so it uses `runOnTick` to get back to the tick thread.
 
 ## 3. Layers
 
@@ -135,9 +135,9 @@ Optional<BlockState> block = world.peekBlock(8, 64, 8);
 ```
 
 - `mainWorld()` is the world named `main` if one is configured, and otherwise the first configured world. `world(name)` returns an `Optional`. `worlds()` returns a copy of the list.
-- **`chunk(x, z)`** returns a future and never blocks. Calls for the same chunk share one load, and a chunk that is already loaded gives back a completed future. The future fails with `IllegalStateException` if the world is closed or if 4096 loads are already pending. A failed load is forgotten, so the next call starts a new one. Once a chunk is loaded, every caller receives the same `IChunk` object.
-- **`loadedChunk(x, z)`** returns the chunk only if it is already loaded. It never blocks and never starts a load. It does not check whether the world is closed, so chunks loaded before `close()` can still be returned.
-- **`unloadChunk(x, z)`** removes a loaded chunk from memory and returns true. The chunk stays in storage, so the next `chunk()` reloads it. It returns false for a chunk that is not loaded or still loading. Callers that already hold the chunk keep a valid object.
+- **`chunk(x, z)`** returns a future and never blocks. Calls for the same chunk share one load, and a chunk that is already loaded gives back a completed future. The future fails with `IllegalStateException` if the world is closed or if 4096 loads are already pending. A failed load is forgotten, so the next call starts a new one. Once a chunk is loaded, each call receives the snapshot of the chunk's current revision. Until the chunk is written, every caller receives the same `IChunk` object. After a write, a later call can receive a newer snapshot, and a snapshot that was already handed out does not change.
+- **`loadedChunk(x, z)`** returns the snapshot of the chunk only if it is already loaded. It never blocks and never starts a load. Like any access, it resets the chunk's idle timer and cancels an eviction in progress. It does not check whether the world is closed, so chunks loaded before `close()` can still be returned.
+- **`unloadChunk(x, z)`** removes a loaded chunk from memory and returns true if the removal finishes before the call returns. A chunk with unsaved changes is saved first, so its removal can finish after the call returns: a later eviction tick removes it once the save succeeds, and a failed save leaves it loaded. The call returns false for a chunk that is not loaded, still loading, held by a ticket or already being evicted, and after `close()`. Once saved, the chunk is in storage, so the next `chunk()` reloads it. Callers that already hold the chunk keep a valid object.
 - **`ticket(x, z, type)`** loads the chunk if needed and returns a future for an `IChunkTicket`. A held ticket keeps the chunk in memory until it is closed, and closing it again does nothing. `ChunkTicketType` is `PLAYER`, `PLUGIN`, `GENERATION` or `SYSTEM`; the type is informational for now. It is callable from any thread and never blocks. The future fails if the world is closed or 4096 loads are already pending.
 - **Automatic eviction.** A loaded chunk with no tickets is evicted after 1800 ticks (90 seconds) without access, or after 600 ticks (30 seconds) when used heap is above 85 percent of the maximum. Each world examines at most 64 chunks per tick. A chunk's save must succeed before it leaves memory. If the save fails, the chunk stays loaded and a warning is logged.
 - **`chunkNow(x, z)`** blocks until the chunk is loaded. It throws `IllegalStateException` on the tick thread and on a world worker thread, because a worker waiting on another queued load can starve the pool. Use `chunk()` there instead. A virtual thread, such as one started by `supplyAsync`, may call it.
@@ -181,7 +181,7 @@ What is not enforced:
 - Nothing stops a plugin from calling `join()` on the tick thread.
 - Nothing checks which thread calls the scheduler or `post`.
 - The tick-thread check in `chunkNow` works only when the world is given a tick-thread predicate. Llama gives one (see section 10).
-- The runtime posts no events yet.
+- The runtime posts `PlayerPreJoinEvent`, `PlayerJoinEvent`, `PlayerQuitEvent` and `ChatEvent`. Nothing posts `PlayerConfigureEvent`.
 
 Rules of thumb:
 

@@ -11,13 +11,9 @@ The project has two Maven modules:
 
 `docs/API.md` describes the API as it stands today. Section 9 lists what is defined but not implemented yet:
 
-- Player registry and an `IPlayer` implementation. `ILlama` has no player accessor.
-- Posting player and chat events. The event types exist, but nothing posts them.
-- Plugin loader and dependency injection. Nothing loads a plugin.
 - Network interceptors and listeners. The types exist, but the runtime does not use them.
-- World writes. `IWorld` and `IChunk` have no block write method.
-- Automatic chunk eviction. A chunk stays loaded until a plugin calls `unloadChunk`.
-- Direct palettes. A section with too many block states fails to encode.
+- Posting `PlayerConfigureEvent`. The type exists, but nothing posts it.
+- Direct palettes. Only the protocol encoder writes them, for sections with more than 256 block states. Chunks in memory have no palette modes.
 - Running queued tasks when the scheduler closes. They are failed or cancelled instead.
 - Enforcing the rule against calling `join()` on the tick thread.
 

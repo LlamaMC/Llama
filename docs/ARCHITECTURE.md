@@ -175,4 +175,54 @@ Decision: no blocking future waits on the tick thread or on worker threads.
 
 Filled in as work lands. Each line says what is in the code, with the commit that added it.
 
-- Protocol IDs for chat, disconnect and command packets: verified against the official 26.3 report.
+- **1. Players and networking** (2980bb8, dfeb03d, 0d8dd4f, 484e102, cd17aef): players are registered on the tick thread
+  after the configuration acknowledgement and once the join packets are ready. The registry is keyed by UUID, a second
+  login kicks the old session, and the pre-join, join and quit events fire. A login admitted after shutdown begins is
+  refused with "Server closed" before any pre-join event. Disconnect and chat/command packet IDs are verified against
+  the official 26.3 report. Not done: there is no authentication. The UUID is an offline UUID derived from the user
+  name, and `online-mode` is read but unused.
+- **2. World writes and persistence** (1bc9c94, 8dbf36e, 967deb5, 9a7037b): `setBlock` runs on the tick thread only, and
+  `setBlockAsync` queues it there. A write bumps the chunk's revision and marks it dirty. Autosave starts a save of each
+  dirty chunk every 600 ticks (30 s) and skips a chunk whose save is still running. A save clears the dirty flag only if
+  its revision is still current. Snapshots are copy-on-write per revision, and each is taken under the chunk's monitor
+  on the thread that starts the save. The Vicuna region file appends each chunk payload, writes the new directory into
+  the inactive copy, and commits it into the alternating slot, so a reader takes the valid commit with the higher
+  generation. Checksums are CRC32C. Data version 5024 stores state strings with one-byte indexes, 5025 uses two-byte
+  indexes above 256 states, and 5023 is still read. Not done: replaced chunk payloads are never reclaimed. There is no
+  compaction, so region files only grow.
+- **3. Command senders and permissions** (7b7752c, 0ea4f61, 75964a7): `ConsoleSender` grants every permission.
+  `PlayerSender` checks the player's grants by UUID. Commands use `llama.command.<label>` unless `@Command.permission`
+  names another node, and `CommandRegistry.dispatch` checks the node before it runs the command. A user's permission is
+  resolved in this order: an explicit grant for the user, a grant through one of the user's groups, then the node's
+  default (`TRUE`, `FALSE` or `OP`, which needs `llama.op`).
+- **4. Plugins** (557f619, 1ba79fb, 599d643, 0a8410d): `PluginLoader` loads the jars in `plugins/` in dependency order,
+  using Kahn's algorithm over `depends` and `softDepends`. Each jar has its own class loader, whose parent is the server
+  loader. A cycle disables every plugin on it, and a missing hard dependency disables the plugins that need it.
+  Constructor injection supplies `IScheduler`, `IPermissionService`, `IEventBus`, `ICommandRegistry`, `IPluginContext`
+  and `Logger`, plus the services that a hard dependency publishes through `IPluginContext.provide`. `disable()` runs in
+  reverse load order, and the plugin's handlers and commands are removed after it. Not done: there is no hot reload.
+- **5. Chunk eviction** (141514a, 80813d5, 49f6200, f4e0808): tickets (`PLAYER`, `PLUGIN`, `GENERATION`, `SYSTEM`) keep a
+  chunk loaded. A loaded chunk with no tickets is evicted after 1800 ticks (90 s) without access, or after 600 ticks
+  (30 s) while used heap is above 85 percent of the maximum. Each tick examines at most 64 chunks. A dirty chunk is saved
+  before it leaves memory, and its removal waits for any running save. A failed save keeps the chunk loaded, logs a
+  warning and starts a new idle period. A new ticket or any access during `EVICTING` cancels the eviction. `unloadChunk`
+  uses the same path.
+- **6. Block-state palettes** (d0f94d6, 568ea0b, 4949e53, 7b7f73d): the protocol encoder picks the mode for each section
+  from its count of distinct states: single for one state, indirect for 2 to 256 states (4 to 8 bits), and direct above
+  256, where entries are global state IDs packed at the bit width of the registry. The global registry is read from
+  `minecraft/26.3/blocks.tsv`, which `scripts/generate_block_states.py` writes from the official `blocks.json`. Not done:
+  direct palettes exist only in the protocol encoder. In memory, a chunk keeps one palette with 16-bit indexes, so there
+  is no promotion, demotion or compaction on save.
+- **7. Shutdown** (e858ff1, 2556101, 414d9cb, 1f95868, 0329f02, 9a7037b, 8834d69): the shutdown sequence in `Llama`
+  disconnects players, closes the console, stops the watchdog, disables plugins, stops the tick loop, closes the
+  scheduler and the server, and closes the worlds, in that order. Each stage waits for its own budget (players 5 s, tick
+  loop 10 s or 1 s when hung, watchdog 1 s, server 5 s, worlds 35 s), capped by the time left before one 60-second
+  deadline. World close saves the dirty chunks before it closes storage. Shutdown is reported clean only when every stage
+  finishes, and the JVM halts with a thread dump at the deadline. Not done: the fixed windows of the decision table
+  (0 to 5 s, 5 to 15 s, 15 to 50 s and 50 to 60 s) are not used.
+- **8. Blocking, futures and deadlocks** (1518ff7, 44d94ea, 89213bc, b1fa1f1): `chunkNow` throws on the tick thread and on
+  world worker threads. Chunk loads chain `supplyAsync` steps with `thenCompose`: load on the storage pool, generate on
+  the generation pool, then write on the storage pool. Every `CompletableFuture` async call names its executor.
+  `TickScheduler.supplyAsync` runs its task on a virtual thread. The watchdog dumps the stacks of a hung tick. Not done:
+  `thenCombine` is not used, a load completes on the worker thread that finishes it rather than on the tick thread
+  through the scheduler, and `join()` and `await()` are not checked on the tick thread (`docs/API.md` section 9).
