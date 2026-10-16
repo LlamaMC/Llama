@@ -11,7 +11,10 @@ import java.util.Comparator;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
@@ -20,6 +23,7 @@ public final class TickScheduler implements IScheduler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TickScheduler.class);
     private static final String PHASE_NAME = "scheduler";
+    private static final String ASYNC_THREAD_PREFIX = "Llama-Scheduler-Async-";
     private static final String NOT_RUNNING = "Tick loop is not running";
     private static final int INITIAL_DELAYED_CAPACITY = 16;
     private static final Comparator<DelayedTask> DUE_ORDER = Comparator.comparingLong(DelayedTask::dueTick)
@@ -34,6 +38,9 @@ public final class TickScheduler implements IScheduler {
             new PriorityBlockingQueue<>(INITIAL_DELAYED_CAPACITY, DUE_ORDER);
     // Every accepted delayed task, including those still waiting in TickLoop's task queue, so close() can cancel them.
     private final Set<DelayedTask> scheduled = ConcurrentHashMap.newKeySet();
+    // Named virtual threads for supplyAsync, so stack dumps show them. close() shuts this executor down.
+    private final ExecutorService asyncExecutor =
+            Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name(ASYNC_THREAD_PREFIX, 0).factory());
 
     public TickScheduler(TickLoop loop) {
         this.loop = loop;
@@ -94,16 +101,23 @@ public final class TickScheduler implements IScheduler {
             throw new NullPointerException("task");
         }
         var promise = new LlamaPromise<T>();
-        Thread.startVirtualThread(() -> settle(promise, task::get));
+        try {
+            asyncExecutor.execute(() -> settle(promise, task::get));
+        } catch (RejectedExecutionException error) {
+            failNotRunning(promise);
+        }
         return promise.future();
     }
 
     /**
      * Shuts the scheduler down for good. Call it after the tick loop has stopped: promises still waiting for a tick
      * fail with {@link IllegalStateException}, delayed tasks are cancelled, and later calls fail or cancel at once.
+     * Async tasks already running finish on their own threads, and later supplyAsync calls fail at once.
      */
     public void close() {
         closed.set(true);
+        // Not shutdownNow and not close(): a slow async task must not hold up the shutdown stage that calls this.
+        asyncExecutor.shutdown();
         pending.forEach(TickScheduler::failIfClaimed);
         pending.clear();
         scheduled.forEach(DelayedTask::cancel);
