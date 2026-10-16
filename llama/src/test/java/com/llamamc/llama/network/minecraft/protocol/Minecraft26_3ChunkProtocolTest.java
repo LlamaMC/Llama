@@ -2,6 +2,8 @@ package com.llamamc.llama.network.minecraft.protocol;
 
 import com.llamamc.llama.world.FlatChunkGenerator;
 import com.llamamc.llama.world.NormalChunkGenerator;
+import com.llamamc.llamaapi.concurrent.LlamaFuture;
+import com.llamamc.llamaapi.concurrent.LlamaPromise;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ChunkBatchReceivedPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.ForgetLevelChunkPacket;
 import com.llamamc.llamaapi.network.minecraft.packet.play.GameEvent;
@@ -21,7 +23,7 @@ import com.llamamc.llamaapi.world.WorldType;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
-import java.nio.file.Path;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -221,12 +223,19 @@ class Minecraft26_3ChunkProtocolTest {
         }
 
         @Override
-        public Path directory() {
-            return Path.of("test");
+        public Optional<IChunk> loadedChunk(int chunkX, int chunkZ) {
+            return Optional.empty();
         }
 
         @Override
-        public IChunk chunk(int chunkX, int chunkZ) {
+        public LlamaFuture<IChunk> chunk(int chunkX, int chunkZ) {
+            var promise = new LlamaPromise<IChunk>();
+            promise.fail(new UnsupportedOperationException());
+            return promise.future();
+        }
+
+        @Override
+        public IChunk chunkNow(int chunkX, int chunkZ) {
             throw new UnsupportedOperationException();
         }
 

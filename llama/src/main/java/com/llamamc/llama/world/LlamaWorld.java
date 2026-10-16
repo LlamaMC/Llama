@@ -1,5 +1,8 @@
 package com.llamamc.llama.world;
 
+import com.llamamc.llamaapi.concurrent.LlamaFuture;
+import com.llamamc.llamaapi.concurrent.LlamaPromise;
+import com.llamamc.llamaapi.concurrent.LlamaPromise.LlamaAsyncException;
 import com.llamamc.llamaapi.world.ChunkPosition;
 import com.llamamc.llamaapi.world.DimensionType;
 import com.llamamc.llamaapi.world.IChunk;
@@ -11,12 +14,18 @@ import com.llamamc.llamaapi.world.storage.IChunkStorage;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 public final class LlamaWorld implements IWorld, AutoCloseable {
+    private static final int MAX_PENDING_LOADS = 4096;
+
     private final String name;
     private final String seed;
     private final Path directory;
@@ -26,23 +35,27 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
     private final IChunkStorage storage;
     private final ChunkNbtCodec codec = new ChunkNbtCodec();
     private final ConcurrentHashMap<ChunkPosition, CompletableFuture<IChunk>> chunks = new ConcurrentHashMap<>();
+    private final AtomicInteger pendingLoads = new AtomicInteger();
     private final ExecutorService generationExecutor;
     private final ExecutorService storageExecutor;
     private final ChunkScheduler ownedScheduler;
+    private final BooleanSupplier onTickThread;
 
     public LlamaWorld(String name, String seed, Path directory, DimensionType dimension, WorldType type,
                       IChunkGenerator generator, IChunkStorage storage) {
-        this(name, seed, directory, dimension, type, generator, storage, new ChunkScheduler(name), true);
+        this(name, seed, directory, dimension, type, generator, storage, new ChunkScheduler(name), true,
+                () -> false);
     }
 
     LlamaWorld(String name, String seed, Path directory, DimensionType dimension, WorldType type,
-               IChunkGenerator generator, IChunkStorage storage, ChunkScheduler scheduler) {
-        this(name, seed, directory, dimension, type, generator, storage, scheduler, false);
+               IChunkGenerator generator, IChunkStorage storage, ChunkScheduler scheduler,
+               BooleanSupplier onTickThread) {
+        this(name, seed, directory, dimension, type, generator, storage, scheduler, false, onTickThread);
     }
 
     private LlamaWorld(String name, String seed, Path directory, DimensionType dimension, WorldType type,
                        IChunkGenerator generator, IChunkStorage storage, ChunkScheduler scheduler,
-                       boolean ownsScheduler) {
+                       boolean ownsScheduler, BooleanSupplier onTickThread) {
         this.name = name;
         this.seed = seed;
         this.directory = directory;
@@ -53,6 +66,7 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
         generationExecutor = scheduler.generation();
         storageExecutor = scheduler.storage();
         ownedScheduler = ownsScheduler ? scheduler : null;
+        this.onTickThread = onTickThread;
     }
 
     @Override
@@ -65,7 +79,6 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
         return seed;
     }
 
-    @Override
     public Path directory() {
         return directory;
     }
@@ -81,11 +94,36 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
     }
 
     @Override
-    public IChunk chunk(int chunkX, int chunkZ) {
-        var position = new ChunkPosition(chunkX, chunkZ);
+    public Optional<IChunk> loadedChunk(int chunkX, int chunkZ) {
+        var future = chunks.get(new ChunkPosition(chunkX, chunkZ));
+        // isDone() comes first: once it is true the outcome cannot change, so the reads below cannot race a failure.
+        if (future == null || !future.isDone() || future.isCompletedExceptionally()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(future.getNow(null));
+    }
+
+    @Override
+    public LlamaFuture<IChunk> chunk(int chunkX, int chunkZ) {
+        var promise = new LlamaPromise<IChunk>();
+        loadOrGenerate(new ChunkPosition(chunkX, chunkZ)).whenComplete((chunk, error) -> {
+            if (error == null) {
+                promise.complete(chunk);
+                return;
+            }
+            promise.fail(unwrap(error));
+        });
+        return promise.future();
+    }
+
+    @Override
+    public IChunk chunkNow(int chunkX, int chunkZ) {
+        if (onTickThread.getAsBoolean()) {
+            throw new IllegalStateException("chunkNow() would block the tick thread; use chunk() instead");
+        }
         try {
-            return chunks.computeIfAbsent(position, this::loadOrGenerate).join();
-        } catch (CompletionException error) {
+            return chunk(chunkX, chunkZ).join();
+        } catch (LlamaAsyncException error) {
             if (error.getCause() instanceof UncheckedIOException ioError) {
                 throw ioError;
             }
@@ -101,19 +139,65 @@ public final class LlamaWorld implements IWorld, AutoCloseable {
         storage.close();
     }
 
+    // Insert before loading: a concurrent caller joins this future instead of starting a second load,
+    // and no IO runs while the map's bin lock is held.
     private CompletableFuture<IChunk> loadOrGenerate(ChunkPosition position) {
-        var future = CompletableFuture.supplyAsync(() -> load(position), storageExecutor)
+        var pending = new CompletableFuture<IChunk>();
+        var existing = chunks.putIfAbsent(position, pending);
+        if (existing != null) {
+            return existing;
+        }
+        if (!reservePendingLoad()) {
+            failLoad(position, pending, new IllegalStateException(
+                    "Chunk loads are capped at " + MAX_PENDING_LOADS + " pending"));
+            return pending;
+        }
+        pending.whenComplete((ignored, error) -> pendingLoads.decrementAndGet());
+        try {
+            startLoad(position, pending);
+        } catch (RejectedExecutionException error) {
+            failLoad(position, pending, error);
+        }
+        return pending;
+    }
+
+    private boolean reservePendingLoad() {
+        if (pendingLoads.incrementAndGet() <= MAX_PENDING_LOADS) {
+            return true;
+        }
+        pendingLoads.decrementAndGet();
+        return false;
+    }
+
+    private void startLoad(ChunkPosition position, CompletableFuture<IChunk> pending) {
+        CompletableFuture.supplyAsync(() -> load(position), storageExecutor)
                 .thenCompose(result -> result.chunk() == null
                         ? CompletableFuture.supplyAsync(() -> generator.generate(this, position), generationExecutor)
                                 .thenCompose(chunk -> CompletableFuture.supplyAsync(
                                         () -> write(position, chunk), storageExecutor))
-                        : CompletableFuture.completedFuture(result.chunk()));
-        future.whenComplete((ignored, error) -> {
-            if (error != null) {
-                chunks.remove(position, future);
-            }
-        });
-        return future;
+                        : CompletableFuture.completedFuture(result.chunk()))
+                .whenComplete((chunk, error) -> finishLoad(position, pending, chunk, error));
+    }
+
+    private void finishLoad(ChunkPosition position, CompletableFuture<IChunk> pending, IChunk chunk, Throwable error) {
+        if (error != null) {
+            failLoad(position, pending, error);
+            return;
+        }
+        pending.complete(chunk);
+    }
+
+    private void failLoad(ChunkPosition position, CompletableFuture<IChunk> pending, Throwable error) {
+        // The entry is removed first, so a caller that retries after seeing the failure starts a new load.
+        chunks.remove(position, pending);
+        pending.completeExceptionally(error);
+    }
+
+    private static Throwable unwrap(Throwable error) {
+        if (error instanceof CompletionException && error.getCause() != null) {
+            return error.getCause();
+        }
+        return error;
     }
 
     private LoadResult load(ChunkPosition position) {

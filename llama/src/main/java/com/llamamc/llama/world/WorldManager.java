@@ -75,7 +75,7 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
         var seed = config.getSeed() == null ? "0" : config.getSeed();
         var generator = generator(config.getType(), config.getDimension(), parseSeed(seed));
         return new LlamaWorld(name, seed, directory, config.getDimension(), config.getType(), generator,
-                new VicunaChunkStorage(directory), scheduler);
+                new VicunaChunkStorage(directory), scheduler, () -> false);
     }
 
     private static IChunkGenerator generator(WorldType type, DimensionType dimension, long seed) {

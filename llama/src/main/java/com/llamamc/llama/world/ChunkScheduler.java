@@ -1,7 +1,7 @@
 package com.llamamc.llama.world;
 
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
@@ -15,8 +15,8 @@ final class ChunkScheduler implements AutoCloseable {
         var processors = Runtime.getRuntime().availableProcessors();
         var generationWorkers = Math.max(1, processors - 1);
         var storageWorkers = Math.max(2, Math.min(8, processors / 4));
-        generation = boundedPool("Llama-WorldGen-" + name + "-", generationWorkers, generationWorkers * 64);
-        storage = boundedPool("Llama-WorldIO-" + name + "-", storageWorkers, storageWorkers * 128);
+        generation = workerPool("Llama-WorldGen-" + name + "-", generationWorkers);
+        storage = workerPool("Llama-WorldIO-" + name + "-", storageWorkers);
     }
 
     ExecutorService generation() {
@@ -35,10 +35,11 @@ final class ChunkScheduler implements AutoCloseable {
         await(storage);
     }
 
-    private static ExecutorService boundedPool(String name, int workers, int capacity) {
+    // Work queues instead of running on the caller, and a rejection after shutdown fails the caller's future.
+    private static ExecutorService workerPool(String name, int workers) {
         return new ThreadPoolExecutor(workers, workers, 0, TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(capacity), Thread.ofPlatform().name(name, 0).factory(),
-                new ThreadPoolExecutor.CallerRunsPolicy());
+                new LinkedBlockingQueue<>(), Thread.ofPlatform().name(name, 0).factory(),
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     private static void await(ExecutorService executor) {

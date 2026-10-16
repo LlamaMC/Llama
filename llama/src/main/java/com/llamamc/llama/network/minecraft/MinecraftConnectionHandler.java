@@ -321,7 +321,7 @@ final class MinecraftConnectionHandler extends SimpleChannelInboundHandler<ByteB
     private List<IChunk> loadChunks(List<ChunkPosition> positions) {
         var requests = positions.stream()
                 .map(position -> CompletableFuture.supplyAsync(
-                        () -> world.chunk(position.x(), position.z()), CHUNK_REQUEST_EXECUTOR))
+                        () -> world.chunkNow(position.x(), position.z()), CHUNK_REQUEST_EXECUTOR))
                 .toList();
         CompletableFuture.allOf(requests.toArray(CompletableFuture[]::new)).join();
         return requests.stream().map(CompletableFuture::join).toList();
