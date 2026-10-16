@@ -156,6 +156,11 @@ final class PluginContext implements IPluginContext {
             return shared.dispatch(sender, line);
         }
 
+        @Override
+        public List<String> commandNames() {
+            return shared.commandNames();
+        }
+
         private void close() {
             shared.unregister(this);
         }

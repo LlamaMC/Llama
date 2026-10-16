@@ -99,6 +99,18 @@ public final class CommandRegistry implements ICommandRegistry {
         return true;
     }
 
+    @Override
+    public List<String> commandNames() {
+        synchronized (lock) {
+            return registrations.values().stream()
+                    .distinct()
+                    .filter(Registration::active)
+                    .map(Registration::name)
+                    .sorted()
+                    .toList();
+        }
+    }
+
     private void execute(ICommand command, ICommandContext context) {
         try {
             command.execute(context);
@@ -196,7 +208,7 @@ public final class CommandRegistry implements ICommandRegistry {
         var labels = Stream.concat(Stream.of(name), aliases).toList();
         var permission = annotation.permission().strip();
         var node = permission.isEmpty() ? NODE_PREFIX + name : permission;
-        return new Registration(owner, command, node, labels);
+        return new Registration(owner, command, name, node, labels);
     }
 
     private static String label(String value, String origin) {
@@ -217,13 +229,15 @@ public final class CommandRegistry implements ICommandRegistry {
     private static final class Registration {
         private final Object owner;
         private final ICommand command;
+        private final String name;
         private final String node;
         private final List<String> labels;
         private volatile boolean active;
 
-        Registration(Object owner, ICommand command, String node, List<String> labels) {
+        Registration(Object owner, ICommand command, String name, String node, List<String> labels) {
             this.owner = owner;
             this.command = command;
+            this.name = name;
             this.node = node;
             this.labels = labels;
         }
@@ -234,6 +248,10 @@ public final class CommandRegistry implements ICommandRegistry {
 
         ICommand command() {
             return command;
+        }
+
+        String name() {
+            return name;
         }
 
         String node() {

@@ -166,6 +166,20 @@ class CommandRegistryTest {
     }
 
     @Test
+    void commandNamesListEachNameOnceWithoutAliasesAndDropUnregisteredCommands() {
+        var registry = registry();
+        var greeter = new Greeter();
+        var exploder = new Exploder();
+        registry.register(greeter, greeter);
+        registry.register(exploder, exploder);
+
+        assertEquals(List.of("explode", "greet"), registry.commandNames());
+
+        registry.unregister(exploder);
+        assertEquals(List.of("greet"), registry.commandNames());
+    }
+
+    @Test
     void unregisterRemovesOnlyTheCommandsOfItsOwner() {
         var registry = registry();
         var greeter = new Greeter();

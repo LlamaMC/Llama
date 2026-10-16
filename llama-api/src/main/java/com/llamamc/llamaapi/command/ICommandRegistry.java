@@ -1,5 +1,7 @@
 package com.llamamc.llamaapi.command;
 
+import java.util.List;
+
 /**
  * Commands run on the thread that calls {@link #dispatch}, not on the tick thread; use the scheduler for tick work.
  */
@@ -21,5 +23,11 @@ public interface ICommandRegistry {
      * Returns false if no command matches. A denied sender gets a reply and the line still counts as matched.
      */
     boolean dispatch(ICommandSender sender, String line);
+
+    /**
+     * Returns the names of the registered commands, sorted, each once. Aliases are not included. The names are in the
+     * lowercase form that {@link #dispatch} matches.
+     */
+    List<String> commandNames();
 
 }
