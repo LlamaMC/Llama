@@ -2,17 +2,23 @@ package com.llamamc.llama.world;
 
 import com.llamamc.llama.world.vicuna.VicunaChunkStorage;
 import com.llamamc.llamaapi.concurrent.LlamaPromise.LlamaAsyncException;
+import com.llamamc.llamaapi.world.BlockState;
 import com.llamamc.llamaapi.world.ChunkPosition;
 import com.llamamc.llamaapi.world.DimensionType;
 import com.llamamc.llamaapi.world.IChunk;
 import com.llamamc.llamaapi.world.IChunkGenerator;
 import com.llamamc.llamaapi.world.IWorld;
 import com.llamamc.llamaapi.world.WorldType;
+import com.llamamc.llamaapi.world.storage.ChunkPayload;
+import com.llamamc.llamaapi.world.storage.IChunkStorage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -26,7 +32,13 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Timeout(30)
 class LlamaWorldTest {
+    private static final int BLOCK_X = 5;
+    private static final int BLOCK_Y = 0;
+    private static final int BLOCK_Z = 7;
+    private static final BlockState STONE = new BlockState("minecraft:stone");
+
     @TempDir
     Path directory;
 
@@ -181,6 +193,38 @@ class LlamaWorldTest {
         assertFalse(world.unloadChunk(0, 0));
     }
 
+    @Test
+    @Timeout(10)
+    void closeFlushesADirtyChunkBeforeTheStorageCloses() throws Exception {
+        try (var scheduler = new ChunkScheduler("test")) {
+            var world = world(new FlatChunkGenerator(), new VicunaChunkStorage(directory), scheduler, () -> true);
+            world.chunk(0, 0).join();
+            world.setBlock(BLOCK_X, BLOCK_Y, BLOCK_Z, STONE);
+
+            assertTrue(world.close(Duration.ofSeconds(5)));
+        }
+
+        // The reopened world reads the chunk from storage. A regeneration would fail the test.
+        try (var reopened = world(failingGenerator())) {
+            assertEquals(STONE, reopened.chunkNow(0, 0).block(BLOCK_X, BLOCK_Y, BLOCK_Z));
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    void aChunkThatFailsToSaveKeepsCloseUnclean() throws Exception {
+        var storage = new FailingWritesStorage(new VicunaChunkStorage(directory));
+        try (var scheduler = new ChunkScheduler("test")) {
+            var world = world(new FlatChunkGenerator(), storage, scheduler, () -> true);
+            world.chunk(0, 0).join();
+            world.setBlock(BLOCK_X, BLOCK_Y, BLOCK_Z, STONE);
+
+            storage.failWrites();
+            assertFalse(world.close(Duration.ofSeconds(5)));
+            assertTrue(world.entryOf(0, 0).orElseThrow().dirty());
+        }
+    }
+
     private IChunkGenerator versionedGenerator(int version, AtomicInteger generations) {
         return new IChunkGenerator() {
             @Override
@@ -223,5 +267,43 @@ class LlamaWorldTest {
     private LlamaWorld world(IChunkGenerator generator, ChunkScheduler scheduler, BooleanSupplier onTickThread) {
         return new LlamaWorld("test", "1234", directory, DimensionType.OVERWORLD, WorldType.FLAT,
                 generator, new VicunaChunkStorage(directory), scheduler, onTickThread);
+    }
+
+    private LlamaWorld world(IChunkGenerator generator, IChunkStorage storage, ChunkScheduler scheduler,
+                             BooleanSupplier onTickThread) {
+        return new LlamaWorld("test", "1234", directory, DimensionType.OVERWORLD, WorldType.FLAT,
+                generator, storage, scheduler, onTickThread);
+    }
+
+    // Storage whose writes fail once the test asks for it. Reads and close go to the delegate.
+    private static final class FailingWritesStorage implements IChunkStorage {
+        private final IChunkStorage delegate;
+        private volatile boolean failing;
+
+        FailingWritesStorage(IChunkStorage delegate) {
+            this.delegate = delegate;
+        }
+
+        void failWrites() {
+            failing = true;
+        }
+
+        @Override
+        public Optional<ChunkPayload> read(ChunkPosition position) throws IOException {
+            return delegate.read(position);
+        }
+
+        @Override
+        public void write(ChunkPosition position, ChunkPayload payload) throws IOException {
+            if (failing) {
+                throw new IOException("Disk full");
+            }
+            delegate.write(position, payload);
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
     }
 }

@@ -1,5 +1,6 @@
 package com.llamamc.llama.world;
 
+import com.llamamc.llama.shutdown.ShutdownDeadline;
 import com.llamamc.llamaapi.concurrent.LlamaFuture;
 import com.llamamc.llamaapi.concurrent.LlamaPromise;
 import com.llamamc.llamaapi.concurrent.LlamaPromise.LlamaAsyncException;
@@ -13,26 +14,35 @@ import com.llamamc.llamaapi.world.IChunkTicket;
 import com.llamamc.llamaapi.world.IWorld;
 import com.llamamc.llamaapi.world.WorldType;
 import com.llamamc.llamaapi.world.storage.IChunkStorage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 
 public final class LlamaWorld implements IWorld, IChunkSaveHook, AutoCloseable {
+    private static final Logger LOGGER = LoggerFactory.getLogger(LlamaWorld.class);
     private static final int MAX_PENDING_LOADS = 4096;
     private static final long IDLE_TIMEOUT_TICKS = 1800;
     private static final long PRESSURE_IDLE_TIMEOUT_TICKS = 600;
@@ -338,12 +348,63 @@ public final class LlamaWorld implements IWorld, IChunkSaveHook, AutoCloseable {
 
     @Override
     public void close() throws IOException {
+        close(ShutdownDeadline.BUDGET);
+    }
+
+    /**
+     * Saves every unsaved chunk within the budget, then closes the world. Returns {@code false} when a chunk was not
+     * written in time. The storage closes either way, so a failed save never leaves it open.
+     */
+    public boolean close(Duration budget) throws IOException {
+        if (budget == null) {
+            throw new NullPointerException("budget");
+        }
+        var saved = flushDirtyChunks(budget);
+        closeResources();
+        return saved;
+    }
+
+    // Saves the unsaved changes of every chunk and waits for those saves within the budget. A save that fails or is late
+    // leaves its chunk unsaved, and the count is logged. Runs while the storage executor is open, so a WorldManager calls
+    // this before it stops the shared executors.
+    boolean flushDirtyChunks(Duration budget) {
+        closed = true;
+        var deadlineNanos = System.nanoTime() + budget.toNanos();
+        var saves = new ArrayList<CompletableFuture<Void>>();
+        for (var entry : chunks.values()) {
+            // A clean chunk completes at once. A save already running is waited for, so an autosave or an eviction in
+            // flight is covered as well.
+            saves.add(entry.saveBeforeUnload(this::persist));
+        }
+        var unsaved = countUnfinished(saves, deadlineNanos);
+        if (unsaved == 0) {
+            return true;
+        }
+        LOGGER.error("World {} has {} chunks that are not saved", name, unsaved);
+        return false;
+    }
+
+    // Closes what the world owns. It runs after the chunks are saved, and an owned scheduler stops before the storage.
+    void closeResources() throws IOException {
         closed = true;
         if (ownedScheduler != null) {
             ownedScheduler.close();
         }
         failPendingLoads();
         storage.close();
+    }
+
+    // Waits until every save has finished or the deadline passes. Returns how many did not complete normally.
+    private static long countUnfinished(List<CompletableFuture<Void>> saves, long deadlineNanos) {
+        var remaining = Math.max(0, deadlineNanos - System.nanoTime());
+        try {
+            CompletableFuture.allOf(saves.toArray(new CompletableFuture<?>[0])).get(remaining, TimeUnit.NANOSECONDS);
+        } catch (ExecutionException | TimeoutException ignored) {
+            // A failed or late save is counted below, once the rest of the saves are known.
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        }
+        return saves.stream().filter(save -> !save.isDone() || save.isCompletedExceptionally()).count();
     }
 
     // Loads dropped from the queue during shutdown never run, so their waiters are failed here instead of hanging.

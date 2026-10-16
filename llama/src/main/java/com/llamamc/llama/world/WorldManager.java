@@ -84,17 +84,28 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
     }
 
     /**
-     * Stops the chunk executors within the budget, then closes every world. The worlds are closed even when an
-     * executor misses the budget, because their storage still has to be closed.
+     * Saves the unsaved chunks of every world, stops the chunk executors, then closes every world. The saves run first
+     * because they need the shared executors. The worlds are closed even when a save or an executor misses the budget,
+     * because their storage still has to be closed. All of it shares one budget.
      *
-     * @return {@code false} if an executor did not terminate within the budget
+     * @return {@code false} if a chunk was not saved or an executor did not terminate within the budget
      */
     public boolean close(Duration budget) throws IOException {
-        var terminated = scheduler.close(budget);
+        if (budget == null) {
+            throw new NullPointerException("budget");
+        }
+        var deadlineNanos = System.nanoTime() + budget.toNanos();
+        var saved = true;
+        for (var world : worlds.values()) {
+            if (!world.flushDirtyChunks(remaining(deadlineNanos))) {
+                saved = false;
+            }
+        }
+        var terminated = scheduler.close(remaining(deadlineNanos));
         IOException failure = null;
         for (var world : worlds.values()) {
             try {
-                world.close();
+                world.closeResources();
             } catch (IOException error) {
                 if (failure == null) {
                     failure = error;
@@ -106,7 +117,11 @@ public final class WorldManager implements IWorldManager, AutoCloseable {
         if (failure != null) {
             throw failure;
         }
-        return terminated;
+        return saved && terminated;
+    }
+
+    private static Duration remaining(long deadlineNanos) {
+        return Duration.ofNanos(Math.max(0, deadlineNanos - System.nanoTime()));
     }
 
     private static LlamaWorld create(String name, WorldsConfig.ConfigWorld config, Path rootDirectory,
