@@ -269,7 +269,7 @@ ConfigFactory.save(config);
 
 ### Commands
 
-A command is a class that implements `ICommand` and carries a `@Command` annotation with a `name` and, optionally, `aliases`. Register an instance with `llama.commands().register(command)`. If any of its labels is already taken, `register` throws `IllegalStateException` and registers nothing. `unregister(command)` removes all of its labels. The registration line assumes an `ILlama llama` in scope, as the earlier samples do.
+A command is either a class that implements `ICommand`, or an object whose public methods carry `@Command`. Register it with `llama.commands().register(owner, handler)`. `owner` is the object that registers the command, such as a plugin instance or the runtime. `unregister(owner)` removes every command that owner registered and returns true when anything was removed. If any label is already taken, `register` throws `IllegalStateException` and registers nothing. The samples assume an `ILlama llama` in scope, as the earlier samples do.
 
 ```java
 import com.llamamc.llamaapi.command.Command;
@@ -290,16 +290,47 @@ public final class GreetCommand implements ICommand {
     }
 }
 
-llama.commands().register(new GreetCommand());
+llama.commands().register(owner, new GreetCommand());
 ```
 
-- **Matching.** The first word of a line selects the command, and matching ignores case. An alias selects the same command as the name. `dispatch(line)` returns false when no label matches.
-- **Context.** `label()` returns the first word of the line in lower case, which is the name or alias that matched. `arguments()` returns the remaining words as an unmodifiable list. The registry splits the line on whitespace and passes the rest as plain strings. Argument parsing beyond that is not provided.
-- **Replies.** `reply(Component)` currently writes to the server log only, at INFO level.
-- **Failures.** If a command throws a `RuntimeException`, the registry logs it and replies with `Command failed: ` followed by the message.
+A method handler declares its arguments in the signature. Each annotated method is one command.
+
+```java
+import com.llamamc.llamaapi.command.Argument;
+import com.llamamc.llamaapi.command.ArgumentType;
+import com.llamamc.llamaapi.command.Command;
+import com.llamamc.llamaapi.command.ICommandContext;
+import com.llamamc.llamaapi.component.Component;
+
+public final class RepeatCommands {
+
+    @Command(name = "repeat", aliases = {"rep"})
+    public void repeat(ICommandContext context,
+                       @Argument(name = "text", type = ArgumentType.STRING, position = 1) String text,
+                       @Argument(name = "count", type = ArgumentType.INTEGER, position = 0) int count) {
+        context.reply(Component.of(text + " x" + count));
+    }
+}
+
+llama.commands().register(owner, new RepeatCommands());
+```
+
+- **Senders.** Every command receives an `ICommandSender`, which has `name()`, `hasPermission(node)` and `sendMessage(Component)`. `dispatch(sender, line)` takes the sender, and `context.sender()` returns it. The console sender is named `CONSOLE`. It has every permission, and its replies are logged at INFO level.
+- **Matching.** The first word of a line selects the command, and matching ignores case. An alias selects the same command as the name. `dispatch` returns false when no label matches.
+- **Context.** `label()` returns the first word of the line in lower case, which is the name or alias that matched. `arguments()` returns the remaining words as an unmodifiable list. `reply(Component)` sends to the sender.
+- **Method handlers.** Registration checks each method. It throws `IllegalArgumentException` naming the class, the method and the reason when:
+  - the method is not public or does not return `void`;
+  - its first parameter is not `ICommandContext`;
+  - a later parameter has no `@Argument`, has a type outside the list below, or has an `ArgumentType` that does not match its type;
+  - two parameters share a `position`, or a `position` is negative;
+  - an optional parameter (`required = false`) is a primitive, or it comes before a required one.
+- **Argument types.** The `ArgumentType` must match the Java type: `String` takes `STRING` or `PLAYER_NAME`, `int` takes `INTEGER`, `long` takes `LONG`, `double` takes `DOUBLE`, `UUID` takes `UUID`, and `Duration` takes `DURATION`. A `Duration` is a whole number with a unit: `s`, `m`, `h` or `d`, as in `30s` or `2h`. A `double` must be finite.
+- **Parsing.** The parameters are filled in `position` order from the words after the label. A missing required argument, or more words than parameters, replies `Usage: <name> <required> [optional]` and the method does not run. A word that does not parse replies `Invalid <name> '<word>': expected <type>` and the method does not run. A missing optional argument is passed as `null`.
+- **Failures.** If a command throws a `RuntimeException`, the registry logs it and replies with `Command failed: ` followed by the message. A checked exception from a method handler is wrapped in an `IllegalStateException` and reported the same way.
 - **Threads.** Commands run on the thread that calls `dispatch`. For console input that is the console thread, not the tick thread, so work that changes server state must go through the scheduler, for example `runOnTick`.
-- **Console.** The console passes each line that matches none of its own commands to the registry. Its own commands run first, so a console command such as `stop` takes precedence over a registry command with the same label.
-- **Permissions.** The `permission` value on `@Command` is not enforced yet.
+- **Console.** The console passes each line that matches none of its own commands to the registry, with the console sender. Its own commands run first, so a console command such as `stop` takes precedence over a registry command with the same label.
+- **Permissions.** Before a command runs, `dispatch` checks `sender.hasPermission(node)`. The node is the `permission` value on `@Command` when that value is not blank. Otherwise it is `llama.command.` followed by the command's name in lower case. Aliases use the node of their command. The node is registered with `PermissionDefault.OP`. A sender without the node gets `You do not have permission to use this command.`, the command does not run, and `dispatch` still returns true, because the line matched a command.
+- **Permission service.** `llama.permissions()` returns an `IPermissionService`. `register(node, PermissionDefault)` declares a node, and `hasPermission(uuid, node)` resolves it. Resolution order: an explicit grant for the user in `permissions.toml`, then a grant through one of the user's groups, then the node's default. `TRUE` grants, `FALSE` denies, and `OP` grants only when the user holds `llama.op`. A node that is not registered and not granted is denied. Registering a node again with the same default does nothing. Registering it with a different default throws `IllegalStateException`.
 
 ## 9. Not yet implemented
 

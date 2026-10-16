@@ -1,6 +1,7 @@
 package com.llamamc.llama;
 
 import com.llamamc.llama.command.CommandRegistry;
+import com.llamamc.llama.command.ConsoleSender;
 import com.llamamc.llama.config.LlamaConfig;
 import com.llamamc.llama.config.PermissionsConfig;
 import com.llamamc.llama.config.WorldsConfig;
@@ -12,6 +13,7 @@ import com.llamamc.llama.event.EventBus;
 import com.llamamc.llama.network.minecraft.MinecraftNetworkServer;
 import com.llamamc.llama.network.minecraft.ServerStatus;
 import com.llamamc.llama.network.minecraft.protocol.MinecraftProtocolVersion;
+import com.llamamc.llama.permission.PermissionService;
 import com.llamamc.llama.registry.MinecraftRegistries;
 import com.llamamc.llama.tick.TickLoop;
 import com.llamamc.llama.tick.TickMetrics;
@@ -25,6 +27,7 @@ import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.config.ConfigFactory;
 import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.network.INetworkServer;
+import com.llamamc.llamaapi.permission.IPermissionService;
 import com.llamamc.llamaapi.registry.IRegistries;
 import com.llamamc.llamaapi.scheduler.IScheduler;
 import com.llamamc.llamaapi.world.DimensionType;
@@ -54,13 +57,15 @@ public class Llama implements ILlama {
 
     private final Path crashReportDirectory = Path.of("crash-reports");
     private final IEventBus eventBus = new EventBus();
-    private final CommandRegistry commands = new CommandRegistry();
+    private final ConsoleSender consoleSender = new ConsoleSender();
     private final CountDownLatch shutdownRequested = new CountDownLatch(1);
     private final CountDownLatch shutdownComplete = new CountDownLatch(1);
     private final AtomicReference<ShutdownRequest> shutdownRequest = new AtomicReference<>();
 
     private volatile LlamaConfig llamaConfig;
     private volatile PermissionsConfig permissionsConfig;
+    private volatile IPermissionService permissions;
+    private volatile CommandRegistry commands;
     private volatile WorldsConfig worldsConfig;
     private volatile GcPauseTracker gcPauseTracker;
     private volatile TickLoop tickLoop;
@@ -75,6 +80,8 @@ public class Llama implements ILlama {
         var startedAt = System.nanoTime();
         LOGGER.info("Starting Llama");
         loadConfigs();
+        permissions = new PermissionService(permissionsConfig);
+        commands = new CommandRegistry(permissions);
 
         var protocolVersion = MinecraftProtocolVersion.parse(llamaConfig.getMinecraftVersion());
         registries = new MinecraftRegistries(protocolVersion);
@@ -87,7 +94,7 @@ public class Llama implements ILlama {
         server.start(new InetSocketAddress(llamaConfig.getHost(), llamaConfig.getPort()));
         watchdog = new Watchdog(tickLoop, gcPauseTracker::totalPauseNanos, WatchdogSettings.defaults(), reason -> restart(reason, null));
         console = new Console(() -> requestShutdown(ExitCode.STOP, "Ctrl+C in console", null, false));
-        console.setFallback(commands::dispatch);
+        console.setFallback(line -> commands.dispatch(consoleSender, line));
         registerConsoleCommands();
 
         tickLoop.start();
@@ -328,6 +335,11 @@ public class Llama implements ILlama {
     @Override
     public ICommandRegistry commands() {
         return commands;
+    }
+
+    @Override
+    public IPermissionService permissions() {
+        return permissions;
     }
 
     public LlamaConfig getLlamaConfig() {

@@ -10,6 +10,10 @@ public interface ICommandContext {
 
     List<String> arguments();
 
-    void reply(Component message);
+    ICommandSender sender();
+
+    default void reply(Component message) {
+        sender().sendMessage(message);
+    }
 
 }

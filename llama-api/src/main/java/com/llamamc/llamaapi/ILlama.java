@@ -3,6 +3,7 @@ package com.llamamc.llamaapi;
 import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.network.INetworkServer;
+import com.llamamc.llamaapi.permission.IPermissionService;
 import com.llamamc.llamaapi.scheduler.IScheduler;
 import com.llamamc.llamaapi.world.IWorldManager;
 import com.llamamc.llamaapi.registry.IRegistries;
@@ -15,6 +16,7 @@ public interface ILlama {
     IWorldManager worlds();
     IRegistries registries();
     ICommandRegistry commands();
+    IPermissionService permissions();
     void shutdown();
 
 }

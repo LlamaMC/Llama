@@ -1,16 +1,14 @@
 package com.llamamc.llama.command;
 
+import com.llamamc.llama.config.PermissionsConfig;
+import com.llamamc.llama.permission.PermissionService;
+import com.llamamc.llamaapi.command.Argument;
+import com.llamamc.llamaapi.command.ArgumentType;
 import com.llamamc.llamaapi.command.Command;
 import com.llamamc.llamaapi.command.ICommand;
 import com.llamamc.llamaapi.command.ICommandContext;
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import com.llamamc.llamaapi.command.ICommandSender;
+import com.llamamc.llamaapi.component.Component;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -34,33 +32,15 @@ class CommandRegistryTest {
     private static final int THREADS = 8;
     private static final int DISPATCH_ROUNDS = 1000;
     private static final long WAIT_SECONDS = 20;
-
-    private LoggerContext loggers;
-    private ReplyCapture capture;
-
-    @BeforeEach
-    void captureReplies() {
-        loggers = (LoggerContext) LogManager.getContext(false);
-        capture = new ReplyCapture();
-        capture.start();
-        loggers.getConfiguration().getRootLogger().addAppender(capture, null, null);
-        loggers.updateLoggers();
-    }
-
-    @AfterEach
-    void stopCapturingReplies() {
-        loggers.getConfiguration().getRootLogger().removeAppender(capture.getName());
-        loggers.updateLoggers();
-        capture.stop();
-    }
+    private static final String DENIED = "You do not have permission to use this command.";
 
     @Test
     void dispatchRunsCommandUnderItsNameWithArgumentsInOrder() {
-        var registry = new CommandRegistry();
+        var registry = registry();
         var greeter = new Greeter();
-        registry.register(greeter);
+        registry.register(greeter, greeter);
 
-        assertTrue(registry.dispatch("greet Alice  Bob"));
+        assertTrue(registry.dispatch(TestSender.operator(), "greet Alice  Bob"));
         assertEquals(1, greeter.runs);
         assertEquals("greet", greeter.last.label());
         assertEquals(List.of("Alice", "Bob"), greeter.last.arguments());
@@ -68,108 +48,239 @@ class CommandRegistryTest {
     }
 
     @Test
-    void aliasDispatchesToSameCommandAndMatchingIgnoresCase() {
-        var registry = new CommandRegistry();
+    void contextExposesTheSenderThatDispatchedTheLine() {
+        var registry = registry();
         var greeter = new Greeter();
-        registry.register(greeter);
+        registry.register(greeter, greeter);
+        var sender = TestSender.operator();
 
-        assertTrue(registry.dispatch("HI Alice"));
+        assertTrue(registry.dispatch(sender, "greet"));
+        assertTrue(greeter.last.sender() == sender);
+    }
+
+    @Test
+    void aliasDispatchesToSameCommandAndMatchingIgnoresCase() {
+        var registry = registry();
+        var greeter = new Greeter();
+        registry.register(greeter, greeter);
+        var sender = TestSender.operator();
+
+        assertTrue(registry.dispatch(sender, "HI Alice"));
         assertEquals("hi", greeter.last.label());
-        assertTrue(registry.dispatch("Greet"));
+        assertTrue(registry.dispatch(sender, "Greet"));
         assertEquals("greet", greeter.last.label());
         assertEquals(2, greeter.runs);
     }
 
     @Test
     void dispatchReturnsFalseForUnknownBlankAndNullLines() {
-        var registry = new CommandRegistry();
+        var registry = registry();
         var greeter = new Greeter();
-        registry.register(greeter);
+        registry.register(greeter, greeter);
+        var sender = TestSender.operator();
 
-        assertFalse(registry.dispatch("unknown Alice"));
-        assertFalse(registry.dispatch("   "));
-        assertFalse(registry.dispatch(""));
-        assertFalse(registry.dispatch(null));
+        assertFalse(registry.dispatch(sender, "unknown Alice"));
+        assertFalse(registry.dispatch(sender, "   "));
+        assertFalse(registry.dispatch(sender, ""));
+        assertFalse(registry.dispatch(sender, null));
         assertEquals(0, greeter.runs);
     }
 
     @Test
+    void dispatchRejectsNullSender() {
+        var registry = registry();
+
+        assertThrows(IllegalArgumentException.class, () -> registry.dispatch(null, "greet"));
+    }
+
+    @Test
     void duplicateAliasThrowsAndFirstCommandKeepsWorking() {
-        var registry = new CommandRegistry();
+        var registry = registry();
         var greeter = new Greeter();
-        registry.register(greeter);
+        registry.register(greeter, greeter);
+        var clash = new Clash();
+        var sender = TestSender.operator();
 
-        var clash = assertThrows(IllegalStateException.class, () -> registry.register(new Clash()));
+        var error = assertThrows(IllegalStateException.class, () -> registry.register(clash, clash));
 
-        assertTrue(clash.getMessage().contains("hi"));
-        assertFalse(registry.dispatch("other"));
-        assertTrue(registry.dispatch("greet"));
+        assertTrue(error.getMessage().contains("hi"));
+        assertFalse(registry.dispatch(sender, "other"));
+        assertTrue(registry.dispatch(sender, "greet"));
         assertEquals(1, greeter.runs);
     }
 
     @Test
     void registeringSameCommandTwiceThrows() {
-        var registry = new CommandRegistry();
+        var registry = registry();
         var greeter = new Greeter();
-        registry.register(greeter);
+        registry.register(greeter, greeter);
 
-        assertThrows(IllegalStateException.class, () -> registry.register(greeter));
+        assertThrows(IllegalStateException.class, () -> registry.register(greeter, greeter));
     }
 
     @Test
-    void registerRejectsNullUnannotatedAndBlankLabelCommands() {
-        var registry = new CommandRegistry();
+    void registerRejectsNullOwnerNullHandlerUnannotatedAndBlankLabelCommands() {
+        var registry = registry();
+        var greeter = new Greeter();
 
-        assertThrows(IllegalArgumentException.class, () -> registry.register(null));
-        assertThrows(IllegalArgumentException.class, () -> registry.register(new Unannotated()));
-        assertThrows(IllegalArgumentException.class, () -> registry.register(new Blank()));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(new Object(), null));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(null, greeter));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(new Object(), new Object()));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(new Object(), new Unannotated()));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(new Object(), new Blank()));
     }
 
     @Test
     void registerRejectsLabelsContainingWhitespace() {
-        var registry = new CommandRegistry();
+        var registry = registry();
+        var spacedName = new SpacedName();
+        var spacedAlias = new SpacedAlias();
 
-        assertThrows(IllegalArgumentException.class, () -> registry.register(new SpacedName()));
-        assertThrows(IllegalArgumentException.class, () -> registry.register(new SpacedAlias()));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(spacedName, spacedName));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(spacedAlias, spacedAlias));
     }
 
     @Test
     void registerRejectsLabelsContainingIdeographicSpace() {
-        var registry = new CommandRegistry();
+        var registry = registry();
+        var spaced = new IdeographicSpaced();
 
-        assertThrows(IllegalArgumentException.class, () -> registry.register(new IdeographicSpaced()));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(spaced, spaced));
     }
 
     @Test
     void unregisterRemovesEveryLabelOnce() {
-        var registry = new CommandRegistry();
+        var registry = registry();
         var greeter = new Greeter();
-        registry.register(greeter);
+        var owner = new Object();
+        var sender = TestSender.operator();
+        registry.register(owner, greeter);
 
-        assertTrue(registry.unregister(greeter));
-        assertFalse(registry.dispatch("greet"));
-        assertFalse(registry.dispatch("hi"));
-        assertFalse(registry.unregister(greeter));
+        assertTrue(registry.unregister(owner));
+        assertFalse(registry.dispatch(sender, "greet"));
+        assertFalse(registry.dispatch(sender, "hi"));
+        assertFalse(registry.unregister(owner));
 
-        registry.register(greeter);
-        assertTrue(registry.dispatch("hi"));
+        registry.register(owner, greeter);
+        assertTrue(registry.dispatch(sender, "hi"));
+    }
+
+    @Test
+    void unregisterRemovesOnlyTheCommandsOfItsOwner() {
+        var registry = registry();
+        var greeter = new Greeter();
+        var repeater = new Repeater();
+        var owner = new Object();
+        registry.register(owner, greeter);
+        registry.register(new Object(), repeater);
+
+        assertTrue(registry.unregister(owner));
+        assertFalse(registry.dispatch(TestSender.operator(), "greet"));
+        assertTrue(registry.dispatch(TestSender.operator(), "repeat 1 x"));
+        assertEquals(List.of("x x1"), repeater.calls);
     }
 
     @Test
     void throwingCommandIsReportedAsFailedReply() {
-        var registry = new CommandRegistry();
-        registry.register(new Exploder());
+        var registry = registry();
+        var exploder = new Exploder();
+        registry.register(exploder, exploder);
+        var sender = TestSender.operator();
 
-        assertTrue(registry.dispatch("explode"));
-        assertEquals(List.of("Command failed: boom"), capture.messages);
+        assertTrue(registry.dispatch(sender, "explode"));
+        assertEquals(List.of("Command failed: boom"), sender.messages);
+    }
+
+    @Test
+    void senderWithoutNodeIsDeniedAndCommandDoesNotRun() {
+        var permissions = permissions();
+        var registry = new CommandRegistry(permissions);
+        var greeter = new Greeter();
+        registry.register(greeter, greeter);
+        var guest = TestSender.guest();
+
+        assertTrue(registry.dispatch(guest, "greet Alice"));
+
+        assertEquals(0, greeter.runs);
+        assertEquals(List.of(DENIED), guest.messages);
+        assertTrue(permissions.nodes().contains("llama.command.greet"));
+    }
+
+    @Test
+    void permissionAnnotationNamesTheNodeAndAliasesShareIt() {
+        var permissions = permissions();
+        var registry = new CommandRegistry(permissions);
+        var secret = new Secret();
+        registry.register(secret, secret);
+        var guest = TestSender.guest();
+
+        assertTrue(registry.dispatch(guest, "s"));
+        assertEquals(List.of(DENIED), guest.messages);
+        assertEquals(0, secret.runs);
+        assertTrue(permissions.nodes().contains("test.secret"));
+        assertFalse(permissions.nodes().contains("llama.command.secret"));
+        assertTrue(registry.dispatch(TestSender.operator(), "secret"));
+        assertEquals(1, secret.runs);
+    }
+
+    @Test
+    void methodCommandParsesArgumentsByPositionAndRuns() {
+        var registry = registry();
+        var repeater = new Repeater();
+        registry.register(repeater, repeater);
+        var sender = TestSender.operator();
+
+        assertTrue(registry.dispatch(sender, "repeat 3 hello"));
+        assertTrue(registry.dispatch(sender, "rep 2 hi"));
+
+        assertEquals(List.of("hello x3", "hi x2"), repeater.calls);
+        assertEquals(List.of(), sender.messages);
+    }
+
+    @Test
+    void methodCommandRepliesWithUsageWhenRequiredArgumentIsMissing() {
+        var registry = registry();
+        var repeater = new Repeater();
+        registry.register(repeater, repeater);
+        var sender = TestSender.operator();
+
+        assertTrue(registry.dispatch(sender, "repeat 3"));
+
+        assertEquals(List.of("Usage: repeat <count> <text>"), sender.messages);
+        assertEquals(List.of(), repeater.calls);
+    }
+
+    @Test
+    void methodCommandRepliesWithErrorWhenArgumentDoesNotParse() {
+        var registry = registry();
+        var repeater = new Repeater();
+        registry.register(repeater, repeater);
+        var sender = TestSender.operator();
+
+        assertTrue(registry.dispatch(sender, "repeat many hi"));
+
+        assertEquals(List.of("Invalid count 'many': expected an integer"), sender.messages);
+        assertEquals(List.of(), repeater.calls);
+    }
+
+    @Test
+    void methodWithoutArgumentAnnotationIsRejectedNamingTheMethod() {
+        var registry = registry();
+        var handler = new MissingArgument();
+
+        var error = assertThrows(IllegalArgumentException.class, () -> registry.register(handler, handler));
+
+        assertTrue(error.getMessage().contains("unannotated"), error.getMessage());
+        assertFalse(registry.dispatch(TestSender.operator(), "bad"));
     }
 
     @Test
     void concurrentRegisterAndDispatchKeepEveryLabel() throws Exception {
-        var registry = new CommandRegistry();
+        var registry = registry();
         var commands = List.<ICommand>of(new Worker0(), new Worker1(), new Worker2(), new Worker3(),
                 new Worker4(), new Worker5(), new Worker6(), new Worker7());
         var labels = List.of("worker0", "worker1", "worker2", "worker3", "worker4", "worker5", "worker6", "worker7");
+        var sender = TestSender.operator();
         var start = new CountDownLatch(1);
         var failures = new ConcurrentLinkedQueue<Throwable>();
 
@@ -179,7 +290,7 @@ class CommandRegistryTest {
             for (var index = 0; index < THREADS; index++) {
                 var command = commands.get(index);
                 var label = labels.get(index);
-                futures.add(executor.submit(() -> runWorker(registry, command, label, labels, start, failures)));
+                futures.add(executor.submit(() -> runWorker(registry, sender, command, label, labels, start, failures)));
             }
             start.countDown();
 
@@ -188,33 +299,42 @@ class CommandRegistryTest {
             }
         }
         assertTrue(failures.isEmpty(), () -> "Workers failed: " + failures);
-        var missing = labels.stream().filter(label -> !registry.dispatch(label)).toList();
+        var missing = labels.stream().filter(label -> !registry.dispatch(sender, label)).toList();
         assertEquals(List.of(), missing);
         assertTrue(commands.stream().allMatch(registry::unregister), "Every worker command should unregister");
     }
 
-    private static void runWorker(CommandRegistry registry, ICommand command, String label, List<String> labels,
-                                  CountDownLatch start, Queue<Throwable> failures) {
+    private static void runWorker(CommandRegistry registry, ICommandSender sender, ICommand command, String label,
+                                  List<String> labels, CountDownLatch start, Queue<Throwable> failures) {
         try {
             start.await();
-            registry.register(command);
-            dispatchRepeatedly(registry, label, labels);
+            registry.register(command, command);
+            dispatchRepeatedly(registry, sender, label, labels);
         } catch (Exception error) {
             failures.add(error);
         }
     }
 
-    private static void dispatchRepeatedly(CommandRegistry registry, String ownLabel, List<String> labels) {
+    private static void dispatchRepeatedly(CommandRegistry registry, ICommandSender sender, String ownLabel,
+                                           List<String> labels) {
         for (var round = 0; round < DISPATCH_ROUNDS; round++) {
-            if (!registry.dispatch(ownLabel)) {
+            if (!registry.dispatch(sender, ownLabel)) {
                 throw new IllegalStateException("Own command " + ownLabel + " was not found");
             }
 
             // Other workers may not have registered yet, so their results are not checked; only exceptions matter.
             for (var label : labels) {
-                registry.dispatch(label);
+                registry.dispatch(sender, label);
             }
         }
+    }
+
+    private static CommandRegistry registry() {
+        return new CommandRegistry(permissions());
+    }
+
+    private static PermissionService permissions() {
+        return new PermissionService(new PermissionsConfig());
     }
 
     @Command(name = "greet", aliases = {"hi"})
@@ -285,6 +405,34 @@ class CommandRegistryTest {
         }
     }
 
+    @Command(name = "secret", aliases = {"s"}, permission = "test.secret")
+    private static final class Secret implements ICommand {
+        private int runs;
+
+        @Override
+        public void execute(ICommandContext context) {
+            runs++;
+        }
+    }
+
+    private static final class Repeater {
+        private final List<String> calls = new CopyOnWriteArrayList<>();
+
+        @Command(name = "repeat", aliases = {"rep"})
+        public void repeat(ICommandContext context,
+                           @Argument(name = "text", type = ArgumentType.STRING, position = 1) String text,
+                           @Argument(name = "count", type = ArgumentType.INTEGER, position = 0) int count) {
+            calls.add(text + " x" + count);
+        }
+    }
+
+    private static final class MissingArgument {
+
+        @Command(name = "bad")
+        public void unannotated(ICommandContext context, String text) {
+        }
+    }
+
     private abstract static class Worker implements ICommand {
 
         @Override
@@ -324,18 +472,35 @@ class CommandRegistryTest {
     private static final class Worker7 extends Worker {
     }
 
-    private static final class ReplyCapture extends AbstractAppender {
+    private static final class TestSender implements ICommandSender {
+        private final boolean operator;
         private final List<String> messages = new CopyOnWriteArrayList<>();
 
-        ReplyCapture() {
-            super("CommandReplyCapture", null, null, true, Property.EMPTY_ARRAY);
+        private TestSender(boolean operator) {
+            this.operator = operator;
+        }
+
+        static TestSender operator() {
+            return new TestSender(true);
+        }
+
+        static TestSender guest() {
+            return new TestSender(false);
         }
 
         @Override
-        public void append(LogEvent event) {
-            if (event.getLevel() == Level.INFO && CommandRegistry.class.getName().equals(event.getLoggerName())) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
+        public String name() {
+            return operator ? "operator" : "guest";
+        }
+
+        @Override
+        public boolean hasPermission(String permission) {
+            return operator;
+        }
+
+        @Override
+        public void sendMessage(Component message) {
+            messages.add(message.text());
         }
     }
 }
