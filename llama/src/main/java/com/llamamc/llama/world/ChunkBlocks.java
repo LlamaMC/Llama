@@ -11,8 +11,10 @@ import java.util.List;
 // The mutable blocks of one loaded chunk. Only its ChunkEntry touches it, under the entry's monitor. Readers get an
 // immutable GeneratedChunk, which is built from the array on demand and cached until the next write.
 final class ChunkBlocks {
-    // Both the snapshot and the codec index palette entries with 16 bits, so a chunk cannot hold more states.
+    // Both the snapshot and the codec index palette entries with 16 bits, so a chunk cannot hold more states in use.
     private static final int MAX_PALETTE = 65_536;
+    // The first rebuild runs at this palette size. Later ones wait until the palette has doubled, see rebuildPalette.
+    private static final int REBUILD_THRESHOLD = 1024;
 
     private final ChunkPosition position;
     private final int minY;
@@ -20,6 +22,7 @@ final class ChunkBlocks {
     private final List<BlockState> palette = new ArrayList<>();
     private final HashMap<BlockState, Integer> paletteIndexes = new HashMap<>();
     private final short[] indexes;
+    private int nextRebuildSize = REBUILD_THRESHOLD;
     private long revision;
     private boolean dirty;
     private IChunk snapshot;
@@ -82,12 +85,44 @@ final class ChunkBlocks {
         if (existing != null) {
             return existing;
         }
-        if (palette.size() == MAX_PALETTE) {
-            throw new IllegalStateException("A chunk holds at most " + MAX_PALETTE + " block states");
+        if (palette.size() >= nextRebuildSize) {
+            rebuildPalette();
+        }
+        if (palette.size() >= MAX_PALETTE) {
+            throw new IllegalStateException("A chunk holds at most " + MAX_PALETTE + " block states in use");
         }
         palette.add(state);
         paletteIndexes.put(state, palette.size() - 1);
         return palette.size() - 1;
+    }
+
+    // Replaced states stay in the palette until a rebuild, so the palette can outgrow the states in use. The rebuild
+    // keeps only the states that blocks use and renumbers the indexes in place, which changes no block and so leaves
+    // the revision alone. The next rebuild waits until the palette has doubled, so a chunk whose states all stay in use
+    // does not scan its blocks for every new state.
+    private void rebuildPalette() {
+        var used = new boolean[palette.size()];
+        for (var index : indexes) {
+            used[Short.toUnsignedInt(index)] = true;
+        }
+        var renumbered = new int[palette.size()];
+        var kept = new ArrayList<BlockState>();
+        for (var oldIndex = 0; oldIndex < palette.size(); oldIndex++) {
+            if (used[oldIndex]) {
+                renumbered[oldIndex] = kept.size();
+                kept.add(palette.get(oldIndex));
+            }
+        }
+        for (var block = 0; block < indexes.length; block++) {
+            indexes[block] = (short) renumbered[Short.toUnsignedInt(indexes[block])];
+        }
+        palette.clear();
+        palette.addAll(kept);
+        paletteIndexes.clear();
+        for (var newIndex = 0; newIndex < palette.size(); newIndex++) {
+            paletteIndexes.put(palette.get(newIndex), newIndex);
+        }
+        nextRebuildSize = Math.min(MAX_PALETTE, Math.max(REBUILD_THRESHOLD, 2 * palette.size()));
     }
 
     private int index(int localX, int blockY, int localZ) {

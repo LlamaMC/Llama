@@ -16,6 +16,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
@@ -45,6 +47,8 @@ class BlockWriteTest {
     private static final BlockState STONE = new BlockState("minecraft:stone");
     private static final BlockState DIRT = new BlockState("minecraft:dirt");
     private static final int DISTINCT_STATES = 300;
+    private static final int EARLY_WRITES = 1_000;
+    private static final int HISTORY_WRITES = 70_000;
 
     @TempDir
     Path directory;
@@ -264,6 +268,34 @@ class BlockWriteTest {
         }
     }
 
+    // Every write replaces a state at one of 16 blocks, so the flat chunk uses at most 20 states (its 4 plus 16) while
+    // its history passes the old 65,536-state cap. Writes must keep succeeding, and an earlier snapshot keeps its
+    // blocks.
+    @Test
+    void writesKeepSucceedingPastTheOldCapWhenTheChunkUsesFewStates() throws Exception {
+        try (var scheduler = new ChunkScheduler("test");
+             var world = world(scheduler, Thread.currentThread(), new VicunaChunkStorage(directory),
+                     LlamaWorld.NO_TICK_EXECUTOR, new ChunkServices(() -> 0L, () -> false, null))) {
+            world.chunk(0, 0).join();
+            for (var index = 0; index < EARLY_WRITES; index++) {
+                world.setBlock(index % IChunk.WIDTH, BLOCK_Y, BLOCK_Z, distinctState(index));
+            }
+            var before = world.loadedChunk(0, 0).orElseThrow();
+            var expected = row(before);
+
+            for (var index = EARLY_WRITES; index < HISTORY_WRITES; index++) {
+                world.setBlock(index % IChunk.WIDTH, BLOCK_Y, BLOCK_Z, distinctState(index));
+            }
+
+            assertEquals(expected, row(before));
+            var after = world.loadedChunk(0, 0).orElseThrow();
+            for (var localX = 0; localX < IChunk.WIDTH; localX++) {
+                assertEquals(distinctState(HISTORY_WRITES - IChunk.WIDTH + localX),
+                        after.block(localX, BLOCK_Y, BLOCK_Z));
+            }
+        }
+    }
+
     // Each index gets its own block, so the chunk holds more than 256 distinct states and needs the wide index format.
     private static BlockState distinctState(int index) {
         return new BlockState("minecraft:stone", Map.of("index", String.valueOf(index)));
@@ -279,6 +311,15 @@ class BlockWriteTest {
 
     private static int localY(int index) {
         return index / (IChunk.WIDTH * IChunk.WIDTH);
+    }
+
+    // The 16 blocks that the history test writes to, read from one chunk.
+    private static List<BlockState> row(IChunk chunk) {
+        var states = new ArrayList<BlockState>();
+        for (var localX = 0; localX < IChunk.WIDTH; localX++) {
+            states.add(chunk.block(localX, BLOCK_Y, BLOCK_Z));
+        }
+        return states;
     }
 
     // Eviction finishes on a later tick, once the save it waits for has completed. Each pass only re-checks the chunk.
