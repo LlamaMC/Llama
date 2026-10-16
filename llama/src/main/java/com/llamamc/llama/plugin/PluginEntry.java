@@ -1,5 +1,7 @@
 package com.llamamc.llama.plugin;
 
+import com.llamamc.llamaapi.command.ICommandRegistry;
+import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.plugin.IPlugin;
 
 import java.io.IOException;
@@ -21,11 +23,11 @@ final class PluginEntry {
     private URLClassLoader classLoader;
     private IPlugin plugin;
 
-    PluginEntry(Path jar, PluginDescriptor descriptor) {
+    PluginEntry(Path jar, PluginDescriptor descriptor, IEventBus events, ICommandRegistry commands) {
         this.jar = jar;
         this.descriptor = descriptor;
         this.label = descriptor == null ? jar.getFileName().toString() : descriptor.id();
-        this.context = new PluginContext(label);
+        this.context = new PluginContext(label, events, commands);
     }
 
     Path jar() {

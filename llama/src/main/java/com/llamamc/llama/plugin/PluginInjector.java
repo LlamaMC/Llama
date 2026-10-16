@@ -1,6 +1,8 @@
 package com.llamamc.llama.plugin;
 
+import com.llamamc.llamaapi.command.ICommandRegistry;
 import com.llamamc.llamaapi.di.annotation.Inject;
+import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.plugin.IPluginContext;
 import org.slf4j.Logger;
 
@@ -11,8 +13,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Creates plugin instances through one constructor. Each parameter is either a shared server service, the plugin's own
- * context or logger, or a service published by one of its hard dependencies. Anything else is an error.
+ * Creates plugin instances through one constructor. Each parameter is the plugin's own context, logger, event bus or
+ * command registry, a shared server service, or a service published by one of its hard dependencies. Anything else is
+ * an error.
  */
 final class PluginInjector {
 
@@ -67,6 +70,12 @@ final class PluginInjector {
     private Object resolve(Class<?> type, PluginContext context, Logger logger, List<PluginContext> dependencies) {
         if (type == IPluginContext.class) {
             return context;
+        }
+        if (type == IEventBus.class) {
+            return context.events();
+        }
+        if (type == ICommandRegistry.class) {
+            return context.commands();
         }
         if (type == Logger.class) {
             return logger;

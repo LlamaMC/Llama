@@ -31,6 +31,8 @@ public final class PluginLoader {
 
     private final Path directory;
     private final ClassLoader parent;
+    private final IEventBus events;
+    private final ICommandRegistry commands;
     private final PluginInjector injector;
     private final List<PluginEntry> entries = new ArrayList<>();
     private final List<PluginEntry> enabled = new ArrayList<>();
@@ -45,10 +47,10 @@ public final class PluginLoader {
         requireArgument(permissions, "permissions");
         this.directory = directory;
         this.parent = parent;
+        this.events = events;
+        this.commands = commands;
         this.injector = new PluginInjector(Map.<Class<?>, Object>of(
                 IScheduler.class, scheduler,
-                IEventBus.class, events,
-                ICommandRegistry.class, commands,
                 IPermissionService.class, permissions));
     }
 
@@ -74,13 +76,19 @@ public final class PluginLoader {
         }
     }
 
-    /** Disables the enabled plugins in reverse load order. A second call does nothing. */
+    /**
+     * Disables the enabled plugins in reverse load order. A second call does nothing. The plugin's handlers and commands
+     * are removed after its disable(), in a finally block, so they go even when disable() fails with an error.
+     */
     public synchronized void disableAll() {
         var reversed = new ArrayList<>(enabled);
         Collections.reverse(reversed);
         for (var entry : reversed) {
-            runDisable(entry);
-            release(entry);
+            try {
+                runDisable(entry);
+            } finally {
+                release(entry);
+            }
             entry.markDisabled(STOPPED);
             LOGGER.info("Disabled plugin {}", entry.label());
         }
@@ -195,7 +203,7 @@ public final class PluginLoader {
             if (text.isEmpty()) {
                 return failed(jar, "missing " + PluginDescriptor.FILE_NAME);
             }
-            return new PluginEntry(jar, PluginDescriptor.parse(text.get()));
+            return new PluginEntry(jar, PluginDescriptor.parse(text.get()), events, commands);
         } catch (IOException error) {
             return failed(jar, "cannot read " + PluginDescriptor.FILE_NAME + ": " + reason(error));
         } catch (IllegalArgumentException error) {
@@ -204,7 +212,7 @@ public final class PluginLoader {
     }
 
     private PluginEntry failed(Path jar, String reason) {
-        var entry = new PluginEntry(jar, null);
+        var entry = new PluginEntry(jar, null, events, commands);
         fail(entry, reason, null);
         return entry;
     }

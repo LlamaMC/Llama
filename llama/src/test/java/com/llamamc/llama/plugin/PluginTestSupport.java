@@ -1,5 +1,7 @@
 package com.llamamc.llama.plugin;
 
+import com.llamamc.llamaapi.event.IEvent;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,6 +18,9 @@ public final class PluginTestSupport {
 
     public interface Greeting {
         String text();
+    }
+
+    public static final class Ping implements IEvent {
     }
 
     public static synchronized void record(String event) {

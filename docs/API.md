@@ -357,7 +357,7 @@ A plugin is a jar in the `plugins/` directory, which is created when missing. It
 - **Lifecycle.** The constructor runs, then `load()`, then `enable()`. At shutdown `disable()` runs in reverse load order. If `enable()` throws, `disable()` still runs for that plugin.
 - **Injection.** Constructor parameters may have these types: `IScheduler`, `IEventBus`, `ICommandRegistry`, `IPermissionService`, `IPluginContext` and `org.slf4j.Logger`. The logger is named after the plugin id. Any other type must be a service that a hard dependency publishes. Otherwise the plugin is disabled, and the message names the type. With several constructors, the one annotated `@Inject` is used. Without one, the only constructor is used, or the one with the most parameters if that is unique.
 - **Services.** `context.provide(Type.class, service)` publishes a service. A plugin with a hard dependency on the publisher receives it through its constructor. Disabling the publisher unpublishes it.
-- **Isolation.** Each plugin has its own class loader, whose parent is the server class loader, so it shares the API classes and cannot replace them. The loader is closed when the plugin is disabled. Disabling a plugin does not remove the commands or event handlers it registered.
+- **Isolation.** Each plugin has its own class loader, whose parent is the server class loader, so it shares the API classes and cannot replace them. The loader is closed when the plugin is disabled. Disabling a plugin removes the commands and event handlers it registered.
 
 ## 9. Not yet implemented
 

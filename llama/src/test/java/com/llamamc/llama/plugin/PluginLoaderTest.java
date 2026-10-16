@@ -6,6 +6,10 @@ import com.llamamc.llama.event.EventBus;
 import com.llamamc.llama.permission.PermissionService;
 import com.llamamc.llama.tick.TickLoop;
 import com.llamamc.llama.tick.TickScheduler;
+import com.llamamc.llamaapi.command.ICommandRegistry;
+import com.llamamc.llamaapi.command.ICommandSender;
+import com.llamamc.llamaapi.component.Component;
+import com.llamamc.llamaapi.event.IEventBus;
 import com.llamamc.llamaapi.plugin.IPlugin;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +33,7 @@ import java.util.jar.JarOutputStream;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -129,6 +134,50 @@ class PluginLoaderTest {
                         public Broken(Clock clock) {
                         }
                     }
+                    """,
+            "Cleanup", """
+                    package fixture;
+
+                    import com.llamamc.llama.plugin.PluginTestSupport;
+                    import com.llamamc.llamaapi.command.ICommandRegistry;
+                    import com.llamamc.llamaapi.event.IEventBus;
+                    import com.llamamc.llamaapi.plugin.IPlugin;
+
+                    public final class Cleanup implements IPlugin {
+                        private final IEventBus events;
+                        private final ICommandRegistry commands;
+
+                        public Cleanup(IEventBus events, ICommandRegistry commands) {
+                            this.events = events;
+                            this.commands = commands;
+                        }
+
+                        @Override
+                        public void enable() {
+                            events.on(PluginTestSupport.Ping.class, ping -> PluginTestSupport.record("ping"));
+                            commands.register(this, new CleanupHandler());
+                        }
+
+                        @Override
+                        public void disable() {
+                            PluginTestSupport.record("disable:cleanup");
+                            throw new IllegalStateException("disable failed");
+                        }
+                    }
+                    """,
+            "CleanupHandler", """
+                    package fixture;
+
+                    import com.llamamc.llama.plugin.PluginTestSupport;
+                    import com.llamamc.llamaapi.command.Command;
+                    import com.llamamc.llamaapi.command.ICommandContext;
+
+                    public final class CleanupHandler {
+                        @Command(name = "cleanup")
+                        public void run(ICommandContext context) {
+                            PluginTestSupport.record("command");
+                        }
+                    }
                     """);
 
     @TempDir
@@ -203,7 +252,7 @@ class PluginLoaderTest {
 
     @Test
     void closingAContextUnpublishesItsServices() {
-        var context = new PluginContext("provider");
+        var context = new PluginContext("provider", new EventBus(), new CommandRegistry(permissions()));
         context.provide(PluginTestSupport.Greeting.class, () -> "hi");
         assertEquals(1, context.published().size());
 
@@ -214,16 +263,68 @@ class PluginLoaderTest {
                 () -> context.provide(PluginTestSupport.Greeting.class, () -> "again"));
     }
 
+    @Test
+    void disabledPluginLosesItsHandlersAndCommandsEvenWhenDisableThrows() throws Exception {
+        var classes = compileFixtures();
+        var plugins = root.resolve("plugins");
+        writeJar(plugins.resolve("cleanup.jar"), descriptor("cleanup", "fixture.Cleanup"), classes,
+                "fixture.Cleanup", "fixture.CleanupHandler");
+        var permissions = permissions();
+        var events = new EventBus();
+        var commands = new CommandRegistry(permissions);
+        var loader = loader(plugins, events, commands, permissions);
+        var sender = new Operator();
+
+        loader.loadAll();
+
+        assertEquals(PluginState.ENABLED, status(loader, "cleanup").state());
+        events.post(new PluginTestSupport.Ping());
+        assertTrue(commands.dispatch(sender, "cleanup"));
+        assertEquals(List.of("ping", "command"), PluginTestSupport.events());
+
+        loader.disableAll();
+        events.post(new PluginTestSupport.Ping());
+
+        assertEquals(PluginState.DISABLED, status(loader, "cleanup").state());
+        assertFalse(commands.dispatch(sender, "cleanup"));
+        assertEquals(List.of("ping", "command", "disable:cleanup"), PluginTestSupport.events());
+    }
+
     private PluginLoader loader(Path plugins) {
+        var permissions = permissions();
+        return loader(plugins, new EventBus(), new CommandRegistry(permissions), permissions);
+    }
+
+    private PluginLoader loader(Path plugins, IEventBus events, ICommandRegistry commands,
+                                PermissionService permissions) {
+        var scheduler = new TickScheduler(new TickLoop(() -> 0L, (phase, error) -> {
+        }));
+        return new PluginLoader(plugins, PluginLoaderTest.class.getClassLoader(), scheduler, events, commands,
+                permissions);
+    }
+
+    private static PermissionService permissions() {
         var config = new PermissionsConfig();
         config.setUsers(Map.of());
         config.setGroups(Map.of());
-        var permissions = new PermissionService(config);
-        var commands = new CommandRegistry(permissions);
-        var scheduler = new TickScheduler(new TickLoop(() -> 0L, (phase, error) -> {
-        }));
-        return new PluginLoader(plugins, PluginLoaderTest.class.getClassLoader(), scheduler, new EventBus(),
-                commands, permissions);
+        return new PermissionService(config);
+    }
+
+    private static final class Operator implements ICommandSender {
+
+        @Override
+        public String name() {
+            return "operator";
+        }
+
+        @Override
+        public boolean hasPermission(String permission) {
+            return true;
+        }
+
+        @Override
+        public void sendMessage(Component message) {
+        }
     }
 
     private static PluginStatus status(PluginLoader loader, String id) {
