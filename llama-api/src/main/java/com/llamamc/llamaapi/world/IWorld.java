@@ -48,6 +48,22 @@ public interface IWorld {
      */
     IChunk chunkNow(int chunkX, int chunkZ);
 
+    /**
+     * Sets one block. Runs on the tick thread only. Called from any other thread it throws IllegalStateException, and
+     * the message names setBlockAsync, which is the call for other threads. The chunk that holds the block must already
+     * be loaded: hold a ticket or wait for {@link #chunk} first. setBlock never loads a chunk, so a write to an
+     * unloaded chunk throws IllegalStateException. A Y outside the chunk's vertical range throws
+     * IndexOutOfBoundsException.
+     */
+    void setBlock(int x, int y, int z, BlockState state);
+
+    /**
+     * Queues {@link #setBlock} on the tick thread and returns a future that completes once the write has run. Callable
+     * from any thread. The future fails with the same exceptions as setBlock, and it fails if the tick loop rejects the
+     * task.
+     */
+    LlamaFuture<Void> setBlockAsync(int x, int y, int z, BlockState state);
+
     default Optional<BlockState> peekBlock(int x, int y, int z) {
         return loadedChunk(Math.floorDiv(x, IChunk.WIDTH), Math.floorDiv(z, IChunk.WIDTH))
                 // The contract is Optional, so an out-of-range Y is simply absent, not an exception.

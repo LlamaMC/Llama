@@ -364,6 +364,18 @@ class Minecraft26_3ChunkProtocolTest {
         }
 
         @Override
+        public void setBlock(int x, int y, int z, BlockState state) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public LlamaFuture<Void> setBlockAsync(int x, int y, int z, BlockState state) {
+            var promise = new LlamaPromise<Void>();
+            promise.fail(new UnsupportedOperationException());
+            return promise.future();
+        }
+
+        @Override
         public DimensionType dimension() {
             return DimensionType.OVERWORLD;
         }

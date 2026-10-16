@@ -52,6 +52,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -100,7 +102,8 @@ public class Llama implements ILlama {
         gcPauseTracker = GcPauseTracker.install();
         tickLoop = new TickLoop(gcPauseTracker::totalPauseNanos, this::onTickError);
         scheduler = new TickScheduler(tickLoop);
-        worldManager = new WorldManager(worldsConfig, Path.of("worlds"), tickLoop::isTickThread, tickLoop::tickCount);
+        worldManager = new WorldManager(worldsConfig, Path.of("worlds"), tickLoop::isTickThread, tickLoop::tickCount,
+                tickExecutor(tickLoop));
         tickLoop.addPhase("chunks", worldManager::tickChunks);
         server = new MinecraftNetworkServer(new ServerStatus(llamaConfig.getMotd(), llamaConfig.getMaxPlayers()),
                 protocolVersion, worldManager.mainWorld(), registries);
@@ -407,6 +410,15 @@ public class Llama implements ILlama {
 
     public WorldsConfig getWorldsConfig() {
         return worldsConfig;
+    }
+
+    // Queues writes for the tick thread. A stopped loop rejects the task, so the write's future fails.
+    private static Executor tickExecutor(TickLoop loop) {
+        return task -> {
+            if (!loop.execute(task)) {
+                throw new RejectedExecutionException("Tick loop is not running");
+            }
+        };
     }
 
     private record ShutdownRequest(ExitCode exitCode, String reason, Throwable cause, boolean crashReport,
