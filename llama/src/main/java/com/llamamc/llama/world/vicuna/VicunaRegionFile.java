@@ -9,6 +9,7 @@ import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Optional;
 import java.util.zip.CRC32C;
@@ -23,21 +24,38 @@ final class VicunaRegionFile implements AutoCloseable {
     private static final int FIRST_DIRECTORY_SECTOR = 1;
     private static final int DIRECTORY_SECTORS = DIRECTORY_BYTES / SECTOR_BYTES;
     private static final int DATA_SECTOR = FIRST_DIRECTORY_SECTOR + DIRECTORY_SECTORS * 2;
+    private static final long DATA_OFFSET = (long) DATA_SECTOR * SECTOR_BYTES;
     private static final int FIRST_COMMIT_OFFSET = 32;
     private static final int COMMIT_BYTES = 24;
+    private static final long MIN_COMPACTION_BYTES = 1024L * 1024L;
+    private static final String TEMPORARY_SUFFIX = ".tmp";
+    private static final IFileMover REPLACE_ATOMICALLY = (source, target) ->
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 
-    private final FileChannel channel;
+    private final Path path;
     private final int regionX;
     private final int regionZ;
+    private final IFileMover mover;
 
+    private FileChannel channel;
     private Entry[] entries;
     private long generation;
     private int activeDirectory;
+    // Bytes of the data area that no directory entry references, counted in whole sectors.
+    private long deadBytes;
 
     VicunaRegionFile(Path path, int regionX, int regionZ) throws IOException {
+        this(path, regionX, regionZ, REPLACE_ATOMICALLY);
+    }
+
+    VicunaRegionFile(Path path, int regionX, int regionZ, IFileMover mover) throws IOException {
+        this.path = path;
         this.regionX = regionX;
         this.regionZ = regionZ;
+        this.mover = mover;
         Files.createDirectories(path.getParent());
+        // A temporary file is only left by a compaction that did not reach the move, so the region file stays the authority.
+        Files.deleteIfExists(temporaryPath(path));
         channel = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
 
         if (channel.size() == 0) {
@@ -55,13 +73,7 @@ final class VicunaRegionFile implements AutoCloseable {
             return Optional.empty();
         }
 
-        var stored = ByteBuffer.allocate(entry.storedLength());
-        readFully(stored, entry.offset());
-        var bytes = stored.array();
-        if (checksum(bytes) != entry.checksum()) {
-            throw new IOException("VICUÑA chunk checksum mismatch in region " + regionX + "," + regionZ);
-        }
-
+        var bytes = readVerified(entry);
         var compression = VicunaCompression.byId(entry.compression());
         if (compression == VicunaCompression.NONE && entry.rawLength() != bytes.length) {
             throw new IOException("Invalid uncompressed VICUÑA chunk length");
@@ -78,29 +90,83 @@ final class VicunaRegionFile implements AutoCloseable {
         padAfter(offset + bytes.length);
         channel.force(false);
 
+        var replaced = entries[index];
         var nextEntries = entries.clone();
         nextEntries[index] = new Entry(offset, bytes.length, bytes.length, generation + 1,
                 VicunaCompression.NONE.id(), 0, checksum(bytes));
-        var nextDirectory = 1 - activeDirectory;
-        var directory = encodeDirectory(nextEntries);
-        var directoryChecksum = checksum(directory.array());
-        writeFully(directory, directoryOffset(nextDirectory));
-        channel.force(false);
+        commit(nextEntries, generation + 1);
+        deadBytes += footprint(replaced);
+    }
 
-        var nextGeneration = generation + 1;
-        var slot = Math.toIntExact(nextGeneration & 1L);
-        writeFully(encodeCommit(nextGeneration, nextDirectory, directoryChecksum),
-                FIRST_COMMIT_OFFSET + (long) slot * COMMIT_BYTES);
-        channel.force(true);
+    synchronized long deadBytes() {
+        return deadBytes;
+    }
 
-        entries = nextEntries;
-        generation = nextGeneration;
-        activeDirectory = nextDirectory;
+    synchronized void compactIfNeeded() throws IOException {
+        var size = channel.size();
+        if (size < MIN_COMPACTION_BYTES || deadBytes * 2 <= size) {
+            return;
+        }
+
+        compact();
+    }
+
+    // The old file stays authoritative until the move succeeds, so a crash or a failed move leaves a readable region.
+    synchronized void compact() throws IOException {
+        var temporary = temporaryPath(path);
+        Files.deleteIfExists(temporary);
+        var rewritten = copyLiveTo(temporary);
+        try {
+            // Windows cannot replace a file that is open, so the old channel closes before the move.
+            channel.close();
+            mover.move(temporary, path);
+        } catch (IOException error) {
+            discard(temporary, error);
+            reopenAfterFailedMove(error);
+            throw error;
+        }
+
+        channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        entries = rewritten.entries;
+        generation = rewritten.generation;
+        activeDirectory = rewritten.activeDirectory;
+        deadBytes = 0;
+        syncDirectory(path.getParent());
     }
 
     @Override
     public synchronized void close() throws IOException {
         channel.close();
+    }
+
+    private VicunaRegionFile copyLiveTo(Path temporary) throws IOException {
+        try (var rewritten = new VicunaRegionFile(temporary, regionX, regionZ, mover)) {
+            rewritten.copyLiveFrom(this);
+            return rewritten;
+        } catch (IOException | RuntimeException error) {
+            discard(temporary, error);
+            throw error;
+        }
+    }
+
+    private void copyLiveFrom(VicunaRegionFile source) throws IOException {
+        var nextEntries = emptyEntries();
+        var offset = DATA_OFFSET;
+        for (var index = 0; index < CHUNK_COUNT; index++) {
+            var entry = source.entries[index];
+            if (entry.empty()) {
+                continue;
+            }
+
+            var bytes = source.readVerified(entry);
+            writeFully(ByteBuffer.wrap(bytes), offset);
+            padAfter(offset + bytes.length);
+            nextEntries[index] = new Entry(offset, entry.storedLength(), entry.rawLength(), entry.generation(),
+                    entry.compression(), entry.flags(), entry.checksum());
+            offset = align(offset + bytes.length);
+        }
+        channel.force(false);
+        commit(nextEntries, source.generation + 1);
     }
 
     private void initialize() throws IOException {
@@ -124,7 +190,7 @@ final class VicunaRegionFile implements AutoCloseable {
         writeFully(directory, directoryOffset(0));
         writeFully(encodeDirectory(entries), directoryOffset(1));
         writeFully(encodeCommit(0, 0, directoryChecksum), FIRST_COMMIT_OFFSET);
-        padTo((long) DATA_SECTOR * SECTOR_BYTES);
+        padTo(DATA_OFFSET);
         channel.force(true);
     }
 
@@ -162,6 +228,58 @@ final class VicunaRegionFile implements AutoCloseable {
         generation = selected.generation();
         activeDirectory = selected.directory();
         entries = decodeDirectory(readDirectory(activeDirectory));
+        deadBytes = channel.size() - DATA_OFFSET - liveBytes(entries);
+    }
+
+    // Writes the new payloads' directory into the inactive copy, then commits it into the alternating slot.
+    private void commit(Entry[] nextEntries, long nextGeneration) throws IOException {
+        var nextDirectory = 1 - activeDirectory;
+        var directory = encodeDirectory(nextEntries);
+        var directoryChecksum = checksum(directory.array());
+        writeFully(directory, directoryOffset(nextDirectory));
+        channel.force(false);
+
+        var slot = Math.toIntExact(nextGeneration & 1L);
+        writeFully(encodeCommit(nextGeneration, nextDirectory, directoryChecksum),
+                FIRST_COMMIT_OFFSET + (long) slot * COMMIT_BYTES);
+        channel.force(true);
+
+        entries = nextEntries;
+        generation = nextGeneration;
+        activeDirectory = nextDirectory;
+    }
+
+    private byte[] readVerified(Entry entry) throws IOException {
+        var stored = ByteBuffer.allocate(entry.storedLength());
+        readFully(stored, entry.offset());
+        var bytes = stored.array();
+        if (checksum(bytes) != entry.checksum()) {
+            throw new IOException("VICUÑA chunk checksum mismatch in region " + regionX + "," + regionZ);
+        }
+
+        return bytes;
+    }
+
+    private void reopenAfterFailedMove(IOException failure) {
+        try {
+            channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        } catch (IOException error) {
+            failure.addSuppressed(error);
+        }
+    }
+
+    private static void discard(Path temporary, Throwable failure) {
+        try {
+            Files.deleteIfExists(temporary);
+        } catch (IOException error) {
+            failure.addSuppressed(error);
+        }
+    }
+
+    private static void syncDirectory(Path directory) throws IOException {
+        try (var directoryChannel = FileChannel.open(directory, StandardOpenOption.READ)) {
+            directoryChannel.force(true);
+        }
     }
 
     private Commit readCommit(int slot) throws IOException {
@@ -264,6 +382,26 @@ final class VicunaRegionFile implements AutoCloseable {
         channel.write(ByteBuffer.wrap(new byte[]{0}), size - 1);
     }
 
+    private static long liveBytes(Entry[] source) {
+        var total = 0L;
+        for (var entry : source) {
+            total += footprint(entry);
+        }
+        return total;
+    }
+
+    private static long footprint(Entry entry) {
+        if (entry.empty()) {
+            return 0;
+        }
+
+        return align(entry.storedLength());
+    }
+
+    private static Path temporaryPath(Path regionPath) {
+        return regionPath.resolveSibling(regionPath.getFileName().toString() + TEMPORARY_SUFFIX);
+    }
+
     private static long align(long value) {
         return (value + SECTOR_BYTES - 1) / SECTOR_BYTES * SECTOR_BYTES;
     }
@@ -286,6 +424,11 @@ final class VicunaRegionFile implements AutoCloseable {
         if (index < 0 || index >= CHUNK_COUNT) {
             throw new IllegalArgumentException("Chunk index outside VICUÑA region: " + index);
         }
+    }
+
+    @FunctionalInterface
+    interface IFileMover {
+        void move(Path source, Path target) throws IOException;
     }
 
     private record Commit(long generation, int directory, int directoryChecksum, int slotChecksum) {

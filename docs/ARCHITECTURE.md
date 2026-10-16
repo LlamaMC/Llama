@@ -188,8 +188,8 @@ Filled in as work lands. Each line says what is in the code, with the commit tha
   on the thread that starts the save. The Vicuna region file appends each chunk payload, writes the new directory into
   the inactive copy, and commits it into the alternating slot, so a reader takes the valid commit with the higher
   generation. Checksums are CRC32C. Data version 5024 stores state strings with one-byte indexes, 5025 uses two-byte
-  indexes above 256 states, and 5023 is still read. Not done: replaced chunk payloads are never reclaimed. There is no
-  compaction, so region files only grow.
+  indexes above 256 states, and 5023 is still read. Compaction reclaims replaced chunk payloads
+  once their dead bytes exceed half of a region file of at least 1 MiB.
 - **3. Command senders and permissions** (7b7752c, 0ea4f61, 75964a7): `ConsoleSender` grants every permission.
   `PlayerSender` checks the player's grants by UUID. Commands use `llama.command.<label>` unless `@Command.permission`
   names another node, and `CommandRegistry.dispatch` checks the node before it runs the command. A user's permission is
