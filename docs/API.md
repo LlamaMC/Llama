@@ -334,11 +334,33 @@ llama.commands().register(owner, new RepeatCommands());
 - **Permissions.** Before a command runs, `dispatch` checks `sender.hasPermission(node)`. The node is the `permission` value on `@Command` when that value is not blank. Otherwise it is `llama.command.` followed by the command's name in lower case. Aliases use the node of their command. The node is registered with `PermissionDefault.OP`. A sender without the node gets `You do not have permission to use this command.`, the command does not run, and `dispatch` still returns true, because the line matched a command.
 - **Permission service.** `llama.permissions()` returns an `IPermissionService`. `register(node, PermissionDefault)` declares a node, and `hasPermission(uuid, node)` resolves it. Resolution order: an explicit grant for the user in `permissions.toml`, then a grant through one of the user's groups, then the node's default. `TRUE` grants, `FALSE` denies, and `OP` grants only when the user holds `llama.op`. A node that is not registered and not granted is denied. Registering a node again with the same default does nothing. Registering it with a different default throws `IllegalStateException`.
 
+## Plugins
+
+A plugin is a jar in the `plugins/` directory, which is created when missing. Its root holds `llama-plugin.json`, and its `main` class implements `IPlugin`:
+
+```json
+{
+  "id": "economy",
+  "name": "Economy",
+  "version": "2.1.0",
+  "main": "com.example.EconomyPlugin",
+  "depends": ["permissions"],
+  "softDepends": ["chat"]
+}
+```
+
+- **Descriptor.** `id`, `name`, `version` and `main` are required. `main` is a public class with a public constructor. `depends` and `softDepends` are optional lists of plugin ids.
+- **Order.** Dependencies are resolved before anything loads. A plugin loads after each of its dependencies that is present. A missing or disabled hard dependency disables the plugin that needs it, and so does every plugin that depends on that one. A missing soft dependency only changes the order.
+- **Failures.** A dependency cycle disables every plugin in it, and the log names the cycle. The second of two plugins with the same id is disabled. A missing or invalid descriptor disables the plugin. An exception in the constructor, `load()` or `enable()` disables that plugin and is logged. The server still starts.
+- **Lifecycle.** The constructor runs, then `load()`, then `enable()`. At shutdown `disable()` runs in reverse load order. If `enable()` throws, `disable()` still runs for that plugin.
+- **Injection.** Constructor parameters may have these types: `IScheduler`, `IEventBus`, `ICommandRegistry`, `IPermissionService`, `IPluginContext` and `org.slf4j.Logger`. The logger is named after the plugin id. Any other type must be a service that a hard dependency publishes. Otherwise the plugin is disabled, and the message names the type. With several constructors, the one annotated `@Inject` is used. Without one, the only constructor is used, or the one with the most parameters if that is unique.
+- **Services.** `context.provide(Type.class, service)` publishes a service. A plugin with a hard dependency on the publisher receives it through its constructor. Disabling the publisher unpublishes it.
+- **Isolation.** Each plugin has its own class loader, whose parent is the server class loader, so it shares the API classes and cannot replace them. The loader is closed when the plugin is disabled. Disabling a plugin does not remove the commands or event handlers it registered.
+
 ## 9. Not yet implemented
 
 - **Player registry and `IPlayer` implementation.** `IPlayer` has no implementing class, and `ILlama` has no player accessor.
 - **Posting player and chat events.** `PlayerJoinEvent`, `PlayerLeaveEvent`, `PlayerConfigureEvent` and `ChatEvent` are defined, but nothing in the runtime posts them, so their handlers never run.
-- **Plugin loader and dependency injection.** `IPlugin`, `IPluginContext` and `@Inject` exist. Nothing loads a plugin, and nothing injects a field outside the example package.
 - **Network interceptors and listeners.** `InterceptorRegistry`, `InboundInterceptor` and `INetworkListener` exist in `llama-api`. The runtime does not use them, and `INetworkServer` does not expose them.
 - **World writes.** `IWorld` and `IChunk` have no `setBlock` or other write method.
 - **Direct palettes.** A section with more block states than the indirect palette allows fails to encode, with the message "direct palettes are not implemented".
