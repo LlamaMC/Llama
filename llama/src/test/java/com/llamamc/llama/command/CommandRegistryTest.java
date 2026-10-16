@@ -134,6 +134,13 @@ class CommandRegistryTest {
     }
 
     @Test
+    void registerRejectsLabelsContainingIdeographicSpace() {
+        var registry = new CommandRegistry();
+
+        assertThrows(IllegalArgumentException.class, () -> registry.register(new IdeographicSpaced()));
+    }
+
+    @Test
     void unregisterRemovesEveryLabelOnce() {
         var registry = new CommandRegistry();
         var greeter = new Greeter();
@@ -255,6 +262,14 @@ class CommandRegistryTest {
 
     @Command(name = "spaced", aliases = {"my hi"})
     private static final class SpacedAlias implements ICommand {
+
+        @Override
+        public void execute(ICommandContext context) {
+        }
+    }
+
+    @Command(name = "my　cmd")
+    private static final class IdeographicSpaced implements ICommand {
 
         @Override
         public void execute(ICommandContext context) {

@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Predicate;
@@ -103,16 +104,16 @@ public final class Console implements IConsole, AutoCloseable {
                 return;
             }
             if (line == null) return;
-            line = line.trim();
+            line = line.strip();
             if (line.isEmpty()) continue;
-            String[] parts = line.split("\\s+");
+            String[] parts = line.split("\\p{javaWhitespace}+");
             handleCommand(parts[0], parts);
         }
     }
 
     @Override
     public void handleCommand(String cmd, String[] parts) {
-        ConsoleCommand command = commands.get(cmd.toLowerCase());
+        ConsoleCommand command = commands.get(cmd.toLowerCase(Locale.ROOT));
         if (command == null) {
             handleUnknown(cmd, parts);
             return;
@@ -125,11 +126,24 @@ public final class Console implements IConsole, AutoCloseable {
     }
 
     private void handleUnknown(String cmd, String[] parts) {
-        Predicate<String> handler = fallback;
-        if (handler != null && handler.test(toLine(cmd, parts))) {
+        if (consumedByFallback(cmd, parts)) {
             return;
         }
         LOGGER.info("Unknown command '{}'. Type 'help' for a list of commands.", cmd);
+    }
+
+    // A fallback that throws has still taken the line, so the line must not also be reported as unknown.
+    private boolean consumedByFallback(String cmd, String[] parts) {
+        Predicate<String> handler = fallback;
+        if (handler == null) {
+            return false;
+        }
+        try {
+            return handler.test(toLine(cmd, parts));
+        } catch (Throwable t) {
+            LOGGER.error("Console fallback failed for command '{}'", cmd, t);
+            return true;
+        }
     }
 
     // parts[0] is the command name, so the arguments start at index 1; the fallback needs the whole line back.

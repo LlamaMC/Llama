@@ -188,6 +188,7 @@ public final class TickScheduler implements IScheduler {
         try {
             entry.task().run();
         } catch (AbandonedThreadError e) {
+            entry.cancel();
             throw e;
         } catch (Throwable t) {
             // An abandoned thread must not log or continue after its task fails.
@@ -216,6 +217,11 @@ public final class TickScheduler implements IScheduler {
         if (closed.get()) {
             scheduled.remove(entry);
             entry.cancel();
+        }
+        // A cancel from another thread may land after the first check, so a cancelled entry is taken back out.
+        if (entry.isCancelled()) {
+            delayed.remove(entry);
+            scheduled.remove(entry);
         }
     }
 

@@ -19,8 +19,9 @@ import java.util.stream.Stream;
 
 public final class CommandRegistry implements ICommandRegistry {
     private static final Logger LOGGER = LoggerFactory.getLogger(CommandRegistry.class);
-    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+    private static final Pattern WHITESPACE = Pattern.compile("\\p{javaWhitespace}+");
 
+    private final Object lock = new Object();
     private final Map<String, Registration> registrations = new ConcurrentHashMap<>();
 
     @Override
@@ -31,24 +32,30 @@ public final class CommandRegistry implements ICommandRegistry {
         var registration = registration(command);
         var labels = registration.labels();
 
-        for (var label : labels) {
-            if (registrations.containsKey(label)) {
-                throw conflict(label);
+        synchronized (lock) {
+            for (var label : labels) {
+                if (registrations.containsKey(label)) {
+                    throw conflict(label);
+                }
             }
+            putLabels(labels, registration);
+            registration.activate();
         }
-        putLabels(labels, registration);
     }
 
     @Override
     public boolean unregister(ICommand command) {
-        var removed = false;
+        synchronized (lock) {
+            var matches = registrationsOf(command);
 
-        for (var entry : registrations.entrySet()) {
-            if (entry.getValue().command() == command && registrations.remove(entry.getKey(), entry.getValue())) {
-                removed = true;
+            for (var registration : matches) {
+                registration.deactivate();
             }
+            for (var registration : matches) {
+                releaseLabels(registration.labels(), registration);
+            }
+            return !matches.isEmpty();
         }
-        return removed;
     }
 
     @Override
@@ -60,7 +67,7 @@ public final class CommandRegistry implements ICommandRegistry {
         var label = words.getFirst().toLowerCase(Locale.ROOT);
         var registration = registrations.get(label);
 
-        if (registration == null) {
+        if (registration == null || !registration.active()) {
             return false;
         }
         execute(registration.command(), new DispatchContext(label, words.subList(1, words.size())));
@@ -95,6 +102,14 @@ public final class CommandRegistry implements ICommandRegistry {
         }
     }
 
+    // Caller holds the lock. A registration sits under several labels, so distinct() collects it once.
+    private List<Registration> registrationsOf(ICommand command) {
+        return registrations.values().stream()
+                .filter(registration -> registration.command() == command)
+                .distinct()
+                .toList();
+    }
+
     private static IllegalStateException conflict(String label) {
         return new IllegalStateException("Command label '" + label + "' is already registered");
     }
@@ -107,8 +122,8 @@ public final class CommandRegistry implements ICommandRegistry {
             throw new IllegalArgumentException(type.getName() + " is missing the @Command annotation");
         }
         var name = label(annotation.name(), type);
-        var aliases = Arrays.stream(annotation.aliases()).map(alias -> label(alias, type)).toList();
-        return new Registration(command, name, aliases);
+        var aliases = Arrays.stream(annotation.aliases()).map(alias -> label(alias, type));
+        return new Registration(command, Stream.concat(Stream.of(name), aliases).toList());
     }
 
     private static String label(String value, Class<?> type) {
@@ -122,10 +137,35 @@ public final class CommandRegistry implements ICommandRegistry {
         return value.toLowerCase(Locale.ROOT);
     }
 
-    private record Registration(ICommand command, String name, List<String> aliases) {
+    // dispatch can see labels while register is still publishing them, so only a fully published registration runs.
+    private static final class Registration {
+        private final ICommand command;
+        private final List<String> labels;
+        private volatile boolean active;
+
+        Registration(ICommand command, List<String> labels) {
+            this.command = command;
+            this.labels = labels;
+        }
+
+        ICommand command() {
+            return command;
+        }
 
         List<String> labels() {
-            return Stream.concat(Stream.of(name), aliases.stream()).toList();
+            return labels;
+        }
+
+        boolean active() {
+            return active;
+        }
+
+        void activate() {
+            active = true;
+        }
+
+        void deactivate() {
+            active = false;
         }
     }
 
