@@ -162,8 +162,13 @@ Decision: no blocking future waits on the tick thread or on worker threads.
 
 - World generation is an asynchronous dependency pipeline. Workers return results as `CompletionStage`s. Dependencies
   use `thenCompose` and `thenCombine`, and results are applied on the tick thread through the scheduler.
-- Every asynchronous step names its executor. Nothing runs on the common pool by accident. The only `Runnable::run`
-  stages are in `LlamaPromise.thenApply` and `thenCompose`, and each carries a comment saying why.
+- Every asynchronous step names its executor, and nothing runs on the common pool by accident. The exceptions are the
+  inline stages: `whenComplete` and `exceptionally` in `LlamaPromise`, `thenApply` and `thenCompose` in `LlamaPromise`
+  (these use `Runnable::run`, and each carries a comment saying why), and the non-async `thenCompose` and
+  `whenComplete` in the chunk load chain. An inline stage runs on the thread that settles its source, or on the calling
+  thread when the source is already settled. World results are applied on the thread that completes the load, not on
+  the tick thread, because the world state is a concurrent map and needs no tick hand-off. Section 10 records that the
+  code differs from the tick-thread hand-off in the decision above.
 - Llama's own blocking chunk methods (`chunkNow`) throw on the tick thread and on world worker threads. This is in
   place today.
 - `join()` on an arbitrary Java future cannot be intercepted, so it is covered by static rules (see the Pureline
@@ -224,11 +229,13 @@ Filled in as work lands. Each line says what is in the code, with the commit tha
   so the 65,536-state limit counts every state the chunk has held since it was loaded.
 - **7. Shutdown** (e858ff1, 2556101, 414d9cb, 1f95868, 0329f02, 9a7037b, 8834d69): the shutdown sequence in `Llama`
   disconnects players, closes the console, stops the watchdog, disables plugins, stops the tick loop, closes the
-  scheduler and the server, and closes the worlds, in that order. Each stage waits for its own budget (players 5 s, tick
-  loop 10 s or 1 s when hung, watchdog 1 s, server 5 s, worlds 35 s), capped by the time left before one 60-second
-  deadline. World close saves the dirty chunks before it closes storage. Shutdown is reported clean only when every stage
-  finishes, and the JVM halts with a thread dump at the deadline. Not done: the fixed windows of the decision table
-  (0 to 5 s, 5 to 15 s, 15 to 50 s and 50 to 60 s) are not used.
+  scheduler and the server, and closes the worlds, in that order. Each stage waits for its budget from
+  `ShutdownWindow`, which has the decision table's window lengths: players 5 s, watchdog 10 s, plugins 10 s, tick
+  loop 10 s or 1 s when hung, server 10 s, worlds 35 s. Each budget is capped by the time left before one 60-second
+  deadline. A stage that finishes early hands over at once. World close saves the dirty chunks before it closes
+  storage. Shutdown is reported clean only when every stage finishes, and the JVM halts with a thread dump at the
+  deadline. Not done: the listening socket stays open until the server stage, so the decision table's 0 to 5 s step,
+  stop accepting connections, does not happen at that point.
 - **8. Blocking, futures and deadlocks** (1518ff7, 44d94ea, 89213bc, b1fa1f1): `chunkNow` throws on the tick thread and on
   world worker threads. Chunk loads chain `supplyAsync` steps with `thenCompose`: load on the storage pool, generate on
   the generation pool, then write on the storage pool. Every `CompletableFuture` async call names its executor.
