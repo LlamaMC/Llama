@@ -6,29 +6,41 @@ import com.llamamc.llamaapi.world.IChunk;
 
 import java.util.List;
 
+/**
+ * An immutable chunk whose blocks index a palette. Palettes of up to 256 states store one byte per block, larger
+ * palettes store one unsigned short per block.
+ */
 public final class GeneratedChunk implements IChunk {
+    private static final int MAX_BYTE_PALETTE = 256;
+    private static final int MAX_SHORT_PALETTE = 65_536;
+
     private final ChunkPosition position;
     private final int minY;
     private final int height;
     private final List<BlockState> palette;
-    private final byte[] blocks;
+    private final byte[] byteBlocks;
+    private final short[] shortBlocks;
 
     public GeneratedChunk(ChunkPosition position, int minY, int height, List<BlockState> palette, byte[] blocks) {
-        if (height <= 0 || height % 16 != 0) {
-            throw new IllegalArgumentException("Chunk height must be a positive multiple of 16");
-        }
-        if (palette.isEmpty() || palette.size() > 256) {
-            throw new IllegalArgumentException("Chunk palette must contain between 1 and 256 states");
-        }
-        if (blocks.length != WIDTH * WIDTH * height) {
-            throw new IllegalArgumentException("Chunk block storage has the wrong size");
-        }
+        checkShape(height, palette, MAX_BYTE_PALETTE, blocks.length);
 
         this.position = position;
         this.minY = minY;
         this.height = height;
         this.palette = List.copyOf(palette);
-        this.blocks = blocks.clone();
+        byteBlocks = blocks.clone();
+        shortBlocks = null;
+    }
+
+    public GeneratedChunk(ChunkPosition position, int minY, int height, List<BlockState> palette, short[] blocks) {
+        checkShape(height, palette, MAX_SHORT_PALETTE, blocks.length);
+
+        this.position = position;
+        this.minY = minY;
+        this.height = height;
+        this.palette = List.copyOf(palette);
+        byteBlocks = null;
+        shortBlocks = blocks.clone();
     }
 
     @Override
@@ -51,7 +63,7 @@ public final class GeneratedChunk implements IChunk {
         checkHorizontal(localX, localZ);
         checkVertical(blockY);
 
-        return palette.get(Byte.toUnsignedInt(blocks[index(localX, blockY, localZ)]));
+        return palette.get(paletteIndex(index(localX, blockY, localZ)));
     }
 
     @Override
@@ -66,16 +78,28 @@ public final class GeneratedChunk implements IChunk {
         return minY - 1;
     }
 
-    List<BlockState> palette() {
-        return palette;
-    }
-
-    byte[] blocks() {
-        return blocks.clone();
+    private int paletteIndex(int index) {
+        if (byteBlocks != null) {
+            return Byte.toUnsignedInt(byteBlocks[index]);
+        }
+        return Short.toUnsignedInt(shortBlocks[index]);
     }
 
     private int index(int localX, int blockY, int localZ) {
         return (blockY - minY) * WIDTH * WIDTH + localZ * WIDTH + localX;
+    }
+
+    private static void checkShape(int height, List<BlockState> palette, int maximumPalette, int blockCount) {
+        if (height <= 0 || height % 16 != 0) {
+            throw new IllegalArgumentException("Chunk height must be a positive multiple of 16");
+        }
+        if (palette.isEmpty() || palette.size() > maximumPalette) {
+            throw new IllegalArgumentException("Chunk palette must contain between 1 and " + maximumPalette
+                    + " states");
+        }
+        if (blockCount != WIDTH * WIDTH * height) {
+            throw new IllegalArgumentException("Chunk block storage has the wrong size");
+        }
     }
 
     private static void checkHorizontal(int localX, int localZ) {

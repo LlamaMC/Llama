@@ -12,37 +12,51 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.List;
 
+/**
+ * Chunk NBT with a prepared block snapshot. The data version says how palette entries and indexes are laid out:
+ * <ul>
+ *     <li>{@code 5023}: key and properties stored separately, one-byte indexes. Read only.</li>
+ *     <li>{@code 5024}: state string per palette entry, one-byte indexes, at most 256 states.</li>
+ *     <li>{@code 5025}: state string per palette entry, unsigned two-byte indexes, more than 256 states.</li>
+ * </ul>
+ */
 final class ChunkNbtCodec {
-    private static final int DATA_VERSION = 5023;
+    private static final int LEGACY_DATA_VERSION = 5023;
+    private static final int DATA_VERSION = 5024;
+    private static final int WIDE_INDEX_DATA_VERSION = 5025;
+    private static final int MAX_BYTE_PALETTE = 256;
+    private static final int MAX_WIDE_PALETTE = 65_536;
+    private static final int SECTION_HEIGHT = 16;
     private static final int SNAPSHOT_MAGIC = 0x4C4C4348;
     private static final int SNAPSHOT_VERSION = 1;
     private static final int TAG_END = 0;
     private static final int TAG_INT = 3;
     private static final int TAG_BYTE_ARRAY = 7;
     private static final int TAG_COMPOUND = 10;
+    private static final String DATA_VERSION_TAG = "DataVersion";
     private static final String GENERATOR_VERSION_TAG = "llama:generator_version";
     private static final String SNAPSHOT_TAG = "llama:prepared_chunk";
 
     ChunkPayload encode(IChunk chunk, int generatorVersion) {
         try {
+            var snapshot = encodeSnapshot(chunk);
             var nbtBytes = new ByteArrayOutputStream();
             try (var output = new DataOutputStream(nbtBytes)) {
                 output.writeByte(TAG_COMPOUND);
                 output.writeUTF("");
                 output.writeByte(TAG_INT);
-                output.writeUTF("DataVersion");
-                output.writeInt(DATA_VERSION);
+                output.writeUTF(DATA_VERSION_TAG);
+                output.writeInt(snapshot.dataVersion());
                 output.writeByte(TAG_INT);
                 output.writeUTF(GENERATOR_VERSION_TAG);
                 output.writeInt(generatorVersion);
-                var snapshot = encodeSnapshot(chunk);
                 output.writeByte(TAG_BYTE_ARRAY);
                 output.writeUTF(SNAPSHOT_TAG);
-                output.writeInt(snapshot.length);
-                output.write(snapshot);
+                output.writeInt(snapshot.bytes().length);
+                output.write(snapshot.bytes());
                 output.writeByte(TAG_END);
             }
             return new ChunkPayload(nbtBytes.toByteArray());
@@ -57,6 +71,7 @@ final class ChunkNbtCodec {
                 throw new IOException("Chunk payload is not an NBT compound");
             }
             input.readUTF();
+            var dataVersion = 0;
             var generatorVersion = 0;
             byte[] snapshot = null;
             while (true) {
@@ -68,6 +83,9 @@ final class ChunkNbtCodec {
                 var name = input.readUTF();
                 if (type == TAG_INT) {
                     var value = input.readInt();
+                    if (name.equals(DATA_VERSION_TAG)) {
+                        dataVersion = value;
+                    }
                     if (name.equals(GENERATOR_VERSION_TAG)) {
                         generatorVersion = value;
                     }
@@ -84,34 +102,34 @@ final class ChunkNbtCodec {
                 throw new StaleChunkException(generatorVersion, expectedGeneratorVersion);
             }
             if (snapshot != null) {
-                return decodeSnapshot(snapshot);
+                return decodeSnapshot(snapshot, dataVersion);
             }
         }
 
         throw new IOException("Chunk NBT does not contain a prepared Llama snapshot");
     }
 
-    private byte[] encodeSnapshot(IChunk chunk) throws IOException {
+    private static EncodedSnapshot encodeSnapshot(IChunk chunk) throws IOException {
         var palette = new ArrayList<BlockState>();
-        var paletteIndexes = new LinkedHashMap<BlockState, Integer>();
-        var blocks = new byte[IChunk.WIDTH * IChunk.WIDTH * chunk.height()];
+        var paletteIndexes = new HashMap<BlockState, Integer>();
+        var indexes = new int[IChunk.WIDTH * IChunk.WIDTH * chunk.height()];
         var index = 0;
         for (var blockY = chunk.minY(); blockY < chunk.minY() + chunk.height(); blockY++) {
             for (var localZ = 0; localZ < IChunk.WIDTH; localZ++) {
                 for (var localX = 0; localX < IChunk.WIDTH; localX++) {
                     var state = chunk.block(localX, blockY, localZ);
-                    var paletteIndex = paletteIndexes.computeIfAbsent(state, ignored -> {
+                    indexes[index++] = paletteIndexes.computeIfAbsent(state, ignored -> {
                         palette.add(state);
                         return palette.size() - 1;
                     });
-                    if (paletteIndex > 255) {
-                        throw new IOException("Prepared chunks currently support at most 256 block states");
-                    }
-                    blocks[index++] = (byte) (int) paletteIndex;
                 }
             }
         }
+        if (palette.size() > MAX_WIDE_PALETTE) {
+            throw new IOException("Prepared chunks support at most " + MAX_WIDE_PALETTE + " distinct block states");
+        }
 
+        var dataVersion = palette.size() > MAX_BYTE_PALETTE ? WIDE_INDEX_DATA_VERSION : DATA_VERSION;
         var bytes = new ByteArrayOutputStream();
         try (var output = new DataOutputStream(bytes)) {
             output.writeInt(SNAPSHOT_MAGIC);
@@ -122,19 +140,28 @@ final class ChunkNbtCodec {
             output.writeInt(chunk.height());
             output.writeInt(palette.size());
             for (var state : palette) {
-                output.writeUTF(state.identifier());
-                output.writeInt(state.properties().size());
-                for (var property : state.properties().entrySet()) {
-                    output.writeUTF(property.getKey());
-                    output.writeUTF(property.getValue());
-                }
+                output.writeUTF(BlockStateStrings.format(state));
             }
-            output.write(blocks);
+            writeIndexes(output, indexes, dataVersion);
         }
-        return bytes.toByteArray();
+        return new EncodedSnapshot(dataVersion, bytes.toByteArray());
     }
 
-    private GeneratedChunk decodeSnapshot(byte[] snapshot) throws IOException {
+    private static void writeIndexes(DataOutputStream output, int[] indexes, int dataVersion) throws IOException {
+        if (dataVersion == WIDE_INDEX_DATA_VERSION) {
+            for (var index : indexes) {
+                output.writeShort(index);
+            }
+            return;
+        }
+
+        for (var index : indexes) {
+            output.writeByte(index);
+        }
+    }
+
+    private static GeneratedChunk decodeSnapshot(byte[] snapshot, int dataVersion) throws IOException {
+        var maximumPalette = maximumPalette(dataVersion);
         try (var input = new DataInputStream(new ByteArrayInputStream(snapshot))) {
             if (input.readInt() != SNAPSHOT_MAGIC || input.readInt() != SNAPSHOT_VERSION) {
                 throw new IOException("Unsupported prepared chunk snapshot");
@@ -142,25 +169,69 @@ final class ChunkNbtCodec {
             var position = new ChunkPosition(input.readInt(), input.readInt());
             var minY = input.readInt();
             var height = input.readInt();
-            var paletteSize = input.readInt();
-            if (paletteSize < 1 || paletteSize > 256) {
-                throw new IOException("Invalid prepared chunk palette size");
+            if (height <= 0 || height % SECTION_HEIGHT != 0) {
+                throw new IOException("Invalid prepared chunk height " + height);
             }
+            var paletteSize = input.readInt();
+            if (paletteSize < 1 || paletteSize > maximumPalette) {
+                throw new IOException("Invalid prepared chunk palette size " + paletteSize);
+            }
+
             var palette = new ArrayList<BlockState>(paletteSize);
             for (var paletteIndex = 0; paletteIndex < paletteSize; paletteIndex++) {
-                var identifier = input.readUTF();
-                var propertyCount = input.readInt();
-                var properties = new LinkedHashMap<String, String>();
-                for (var propertyIndex = 0; propertyIndex < propertyCount; propertyIndex++) {
-                    properties.put(input.readUTF(), input.readUTF());
+                palette.add(readState(input, dataVersion));
+            }
+            var blockCount = IChunk.WIDTH * IChunk.WIDTH * height;
+            if (dataVersion == WIDE_INDEX_DATA_VERSION) {
+                var indexes = new short[blockCount];
+                for (var block = 0; block < blockCount; block++) {
+                    indexes[block] = input.readShort();
                 }
-                palette.add(new BlockState(identifier, properties));
+                return new GeneratedChunk(position, minY, height, palette, indexes);
             }
-            var blocks = input.readNBytes(IChunk.WIDTH * IChunk.WIDTH * height);
-            if (blocks.length != IChunk.WIDTH * IChunk.WIDTH * height) {
-                throw new IOException("Truncated prepared chunk snapshot");
-            }
-            return new GeneratedChunk(position, minY, height, palette, blocks);
+
+            var indexes = new byte[blockCount];
+            input.readFully(indexes);
+            return new GeneratedChunk(position, minY, height, palette, indexes);
         }
+    }
+
+    private static BlockState readState(DataInputStream input, int dataVersion) throws IOException {
+        if (dataVersion == LEGACY_DATA_VERSION) {
+            return readLegacyState(input);
+        }
+
+        var text = input.readUTF();
+        try {
+            return BlockStateStrings.parse(text);
+        } catch (IllegalArgumentException error) {
+            throw new IOException("Invalid block state in prepared chunk: " + text, error);
+        }
+    }
+
+    private static BlockState readLegacyState(DataInputStream input) throws IOException {
+        var identifier = input.readUTF();
+        var propertyCount = input.readInt();
+        var properties = new LinkedHashMap<String, String>();
+        for (var propertyIndex = 0; propertyIndex < propertyCount; propertyIndex++) {
+            properties.put(input.readUTF(), input.readUTF());
+        }
+
+        try {
+            return new BlockState(identifier, properties);
+        } catch (IllegalArgumentException error) {
+            throw new IOException("Invalid block state in prepared chunk: " + identifier, error);
+        }
+    }
+
+    private static int maximumPalette(int dataVersion) throws IOException {
+        return switch (dataVersion) {
+            case LEGACY_DATA_VERSION, DATA_VERSION -> MAX_BYTE_PALETTE;
+            case WIDE_INDEX_DATA_VERSION -> MAX_WIDE_PALETTE;
+            default -> throw new IOException("Unsupported chunk data version " + dataVersion);
+        };
+    }
+
+    private record EncodedSnapshot(int dataVersion, byte[] bytes) {
     }
 }
