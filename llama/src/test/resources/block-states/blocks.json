@@ -1,0 +1,91 @@
+{
+  "minecraft:air": {
+    "states": [
+      {
+        "default": true,
+        "id": 0
+      }
+    ]
+  },
+  "minecraft:grass_block": {
+    "properties": {
+      "snowy": [
+        "true",
+        "false"
+      ]
+    },
+    "states": [
+      {
+        "id": 8,
+        "properties": {
+          "snowy": "true"
+        }
+      },
+      {
+        "default": true,
+        "id": 9,
+        "properties": {
+          "snowy": "false"
+        }
+      }
+    ]
+  },
+  "minecraft:oak_slab": {
+    "properties": {
+      "type": [
+        "top",
+        "bottom",
+        "double"
+      ],
+      "waterlogged": [
+        "true",
+        "false"
+      ]
+    },
+    "states": [
+      {
+        "id": 15177,
+        "properties": {
+          "type": "top",
+          "waterlogged": "true"
+        }
+      },
+      {
+        "id": 15178,
+        "properties": {
+          "type": "top",
+          "waterlogged": "false"
+        }
+      },
+      {
+        "id": 15179,
+        "properties": {
+          "type": "bottom",
+          "waterlogged": "true"
+        }
+      },
+      {
+        "default": true,
+        "id": 15180,
+        "properties": {
+          "type": "bottom",
+          "waterlogged": "false"
+        }
+      },
+      {
+        "id": 15181,
+        "properties": {
+          "type": "double",
+          "waterlogged": "true"
+        }
+      },
+      {
+        "id": 15182,
+        "properties": {
+          "type": "double",
+          "waterlogged": "false"
+        }
+      }
+    ]
+  }
+}

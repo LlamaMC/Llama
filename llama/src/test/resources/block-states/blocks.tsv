@@ -1,0 +1,9 @@
+minecraft:air	0		true
+minecraft:grass_block	8	snowy=true	false
+minecraft:grass_block	9	snowy=false	true
+minecraft:oak_slab	15177	type=top,waterlogged=true	false
+minecraft:oak_slab	15178	type=top,waterlogged=false	false
+minecraft:oak_slab	15179	type=bottom,waterlogged=true	false
+minecraft:oak_slab	15180	type=bottom,waterlogged=false	true
+minecraft:oak_slab	15181	type=double,waterlogged=true	false
+minecraft:oak_slab	15182	type=double,waterlogged=false	false
